@@ -2,22 +2,46 @@
 const MODELS = ["gemini-flash-latest", "gemini-flash-lite-latest"];
 
 const SYSTEM = `You are a friendly tech repair assistant. The user shows or describes damaged hardware or a software problem.
-On the user's first report (a photo, a description, or both), don't diagnose yet. Put 1-3 short clarifying questions in "questions",
+On the user's first report (a photo, a description, or both), never diagnose yet, however obvious or urgent the problem looks
+(a swollen battery or water damage still gets questions first). Put 1-3 short clarifying questions in "questions",
 each with 2-3 answer options of 1-3 words (like "Yes", "No", "Not sure"), the last one being "Not sure". "message" can be empty then.
-Once the user has answered, or you already have enough to go on, leave "questions" empty and diagnose:
-the most likely cause in "message", and the fix steps in "steps" (one step per item, no numbers), easiest and cheapest first.
+Once the user has answered, leave "questions" empty and fill "diagnosis":
+"summary": the user's problem in 3-6 words (like "Screen flickers after a drop");
+"title": the verdict in 3-6 words starting with "Likely" (like "Likely a loose display connector");
+"category": whether the fix is "Hardware", "Software" or "Both";
+"difficulty": "Beginner-safe" if a beginner can do the fix safely at home, "Some skill" if it needs tools or care, "Pro repair" if it needs a professional;
+"causes": the 2-3 possible causes, most likely first, each with a "name" of 2-6 words and a "detail" of one or two sentences saying why;
+"steps": the repair steps (one step per item, no numbers), easiest and cheapest first.
+The app shows a "needs a professional" page for "Pro repair" verdicts, so in every diagnosis also fill:
+"problem": the problem itself in 2-4 words (like "Swollen battery");
+"why": one or two sentences on what is wrong and why it isn't a safe home fix (or, if it is, why it's manageable);
+"risk": "Low risk", "Medium risk" or "High risk" for the device and the person;
+"confidence": how sure you are of this verdict, 0-100;
+"now": 2-4 short things to do right away to stay safe and protect data, each with the icon that fits best;
+"shopSearch": what to search for to find the right repair shop (like "MacBook battery replacement").
+Put a one-sentence summary of the verdict in "message".
+For any later follow-up question, answer in "message" (and "steps" if the answer has steps).
+Set "kind" to "questions" when asking clarifying questions, "diagnosis" when giving the verdict, "answer" for follow-ups.
+"diagnosis" must always be filled; when "kind" isn't "diagnosis", put your best current guess there (the app ignores it).
 Flag safety risks (swollen batteries, mains power, data loss) and say plainly when it's time for a professional or a replacement.
 If the photo is unclear, say what you'd need to see.
 Always fill the short status labels the app shows on its "Diagnosing" screen, 1-3 words each:
 "device": the device you identified, make and model if you can tell (like "iPhone 13"), otherwise its type (like "Laptop");
+"deviceType": the kind of device, for the app's icon;
 "finding": the main damage or symptom (like "Crack found", "Water damage", "No sound");
 "software": whether software could be the cause (like "Not the cause", "Possible cause", "Likely cause").
 Write plain text only: no markdown, no ** or # symbols. The app shows your reply as-is.`;
+
+const NOW_ICONS = [
+  "power", "zap-off", "upload-cloud", "save", "x-octagon", "slash",
+  "alert-triangle", "thermometer", "droplet", "wind", "lock", "battery",
+];
 
 // Structured output, so the app can render questions as tappable answer chips.
 const SCHEMA = {
   type: "object",
   properties: {
+    kind: { type: "string", enum: ["questions", "diagnosis", "answer"] },
     questions: {
       type: "array",
       items: {
@@ -31,9 +55,76 @@ const SCHEMA = {
     device: { type: "string" },
     finding: { type: "string" },
     software: { type: "string" },
+    diagnosis: {
+      type: "object",
+      properties: {
+        summary: { type: "string" },
+        title: { type: "string" },
+        category: { type: "string", enum: ["Hardware", "Software", "Both"] },
+        difficulty: { type: "string", enum: ["Beginner-safe", "Some skill", "Pro repair"] },
+        causes: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: { name: { type: "string" }, detail: { type: "string" } },
+            required: ["name", "detail"],
+          },
+        },
+        steps: { type: "array", items: { type: "string" } },
+        problem: { type: "string" },
+        why: { type: "string" },
+        risk: { type: "string", enum: ["Low risk", "Medium risk", "High risk"] },
+        confidence: { type: "integer" },
+        now: {
+          type: "array",
+          items: {
+            type: "object",
+            // Feather icon names the app can draw.
+            properties: { icon: { type: "string", enum: NOW_ICONS }, text: { type: "string" } },
+            required: ["icon", "text"],
+          },
+        },
+        shopSearch: { type: "string" },
+      },
+      required: [
+        "summary", "title", "category", "difficulty", "causes", "steps",
+        "problem", "why", "risk", "confidence", "now", "shopSearch",
+      ],
+    },
+    deviceType: { type: "string", enum: ["phone", "tablet", "laptop", "desktop", "tv", "watch", "headphones", "printer", "other"] },
   },
-  required: ["questions", "message", "device", "finding", "software"],
+  // Everything required: Flash-Lite skips optional fields, so "kind" says which ones apply to this reply.
+  required: ["kind", "questions", "message", "device", "deviceType", "finding", "software", "diagnosis"],
 };
+
+type Diagnosis = {
+  summary: string;
+  title: string;
+  category: string;
+  difficulty: string;
+  causes: { name: string; detail: string }[];
+  steps: string[];
+  problem: string;
+  why: string;
+  now: { icon: string; text: string }[];
+};
+
+const numbered = (items: string[]) => items.map((it, i) => `${i + 1}. ${it}`);
+
+// Plain-text version of a diagnosis: what the model sees in later turns, and what the Share button sends.
+function diagnosisText(d: Diagnosis) {
+  if (d.difficulty === "Pro repair") {
+    return [`${d.problem}: needs a professional`, d.why, "Do this now:", ...d.now.map((n) => `- ${n.text}`)].join("\n");
+  }
+  return [
+    d.title,
+    `${d.category} · ${d.difficulty}`,
+    "Possible causes:",
+    ...numbered(d.causes.map((c) => `${c.name}: ${c.detail}`)),
+    "Repair steps:",
+    ...numbered(d.steps),
+  ].join("\n");
+}
 
 const COUNTS = ["", "One quick check", "Two quick checks", "Three quick checks"];
 
@@ -59,14 +150,19 @@ export async function POST(req: Request) {
         const raw: string = data.choices[0].message.content;
         try {
           const out = JSON.parse(raw);
-          // Steps come back as a list because JSON mode ignores "put each step on its own line".
-          const steps = (out.steps ?? []).map((st: string, i: number) => `${i + 1}. ${st}`);
+          const { device, deviceType, finding, software } = out;
           const questions = out.questions ?? [];
+          // Questions take precedence: a reply that asks something isn't a diagnosis yet.
+          const diagnosis: Diagnosis | undefined = out.kind === "diagnosis" && !questions.length ? out.diagnosis : undefined;
+          if (diagnosis) {
+            return Response.json({ text: diagnosisText(diagnosis), questions, device, deviceType, finding, software, diagnosis });
+          }
+          // Steps come back as a list because JSON mode ignores "put each step on its own line".
+          const steps = numbered(out.steps ?? []);
           // Written here, not by the model: it kept saying "Two" whatever the actual count.
           const n = questions.length;
           const message = n ? `Got it. ${COUNTS[n] ?? `${n} quick checks`} so I can narrow it down:` : out.message;
-          const { device, finding, software } = out;
-          return Response.json({ text: [message, ...steps].join("\n\n"), questions, device, finding, software });
+          return Response.json({ text: [message, ...steps].join("\n\n"), questions, device, deviceType, finding, software });
         } catch {
           return Response.json({ text: raw, questions: [] }); // model ignored the schema; show it as plain text
         }
