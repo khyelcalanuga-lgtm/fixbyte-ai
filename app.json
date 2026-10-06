@@ -3,12 +3,21 @@
     "name": "FixIt Bot",
     "slug": "fixit-bot",
     "scheme": "fixitbot",
-    "userInterfaceStyle": "automatic",
-    "web": { "output": "server" },
+    "userInterfaceStyle": "light",
+    "backgroundColor": "#F3F3F3",
+    "web": {
+      "output": "server"
+    },
     "plugins": [
       "expo-router",
       "expo-status-bar",
-      ["expo-image-picker", { "photosPermission": "FixIt Bot needs your photos to diagnose damaged hardware." }]
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "FixIt Bot needs your photos to diagnose damaged hardware."
+        }
+      ],
+      "expo-font"
     ]
   }
 }
