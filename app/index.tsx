@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { forwardRef, useEffect, useRef, useState } from "react";
 import {
   Alert,
   Animated,
@@ -18,6 +18,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import * as ImagePicker from "expo-image-picker";
 import { Feather } from "@expo/vector-icons";
+import Svg, { Circle, type CircleProps } from "react-native-svg";
 import { useFonts } from "expo-font";
 // Per-weight imports: the package root pulls in all 18 Poppins files.
 import { Poppins_400Regular } from "@expo-google-fonts/poppins/400Regular";
@@ -43,6 +44,13 @@ type Diag = { photo: boolean; device?: string; finding?: string; software?: stri
 const TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 const GREEN = "#7CEB5A";
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const RING_PAD = 6; // inset of the progress arc, so its 10pt dot isn't clipped
+// Animated adds collapsable={false}, which react-native-svg's web build forwards to the DOM <circle> (console error).
+const AnimatedCircle = Animated.createAnimatedComponent(
+  forwardRef<Circle, CircleProps & { collapsable?: boolean }>(function ArcCircle({ collapsable: _, ...props }, ref) {
+    return <Circle ref={ref} {...props} />;
+  }),
+);
 
 function toApi(turns: Turn[]) {
   return turns.map((t) => {
@@ -367,15 +375,25 @@ export default function App() {
 function Diagnosing({ d, onCancel }: { d: Diag; onCancel: () => void }) {
   const { width, height } = useWindowDimensions();
   const size = Math.min(297, width - 105, height * 0.34); // 297pt on the 402x874 design, smaller on short phones
-  const spin = useRef(new Animated.Value(0)).current;
+  const r = size / 2 - RING_PAD;
+  const circumference = 2 * Math.PI * r;
+
+  // The diagnosis is one request with no real percentage, so the arc follows the checklist:
+  // half on open (two rows done), easing toward 85% while waiting, then 92% and 100% as the last rows tick.
+  // useNativeDriver is off: the native driver can't animate SVG stroke props.
+  const progress = useRef(new Animated.Value(0)).current;
   useEffect(() => {
-    const loop = Animated.loop(
-      Animated.timing(spin, { toValue: 1, duration: 2400, easing: Easing.linear, useNativeDriver: Platform.OS !== "web" }),
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [spin]);
-  const rotate = spin.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] });
+    const to = (toValue: number, duration: number, easing = Easing.out(Easing.quad)) =>
+      Animated.timing(progress, { toValue, duration, easing, useNativeDriver: false });
+    const anim =
+      d.stage <= 3
+        ? Animated.sequence([to(0.5, 700), to(0.85, 12000, Easing.out(Easing.cubic))])
+        : to(d.stage === 4 ? 0.92 : 1, 450);
+    anim.start();
+    return () => anim.stop();
+  }, [d.stage, progress]);
+  const dashOffset = progress.interpolate({ inputRange: [0, 1], outputRange: [circumference, 0] });
+  const rotate = progress.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] });
 
   const rows: [string, string | undefined][] = [
     ["Identified the device", d.device],
@@ -395,7 +413,23 @@ function Diagnosing({ d, onCancel }: { d: Diag; onCancel: () => void }) {
       </View>
 
       <View style={[s.ringBox, { width: size, height: size }]}>
-        <Animated.View style={[s.ring, { borderRadius: size / 2, transform: [{ rotate }] }]}>
+        {/* Rotated -90° so the arc starts at 12 o'clock and fills clockwise. */}
+        <Svg width={size} height={size} style={s.ringSvg}>
+          <Circle cx={size / 2} cy={size / 2} r={r} stroke="#E3E3E3" strokeWidth={3} fill="none" />
+          <AnimatedCircle
+            cx={size / 2}
+            cy={size / 2}
+            r={r}
+            stroke={GREEN}
+            strokeWidth={3}
+            strokeLinecap="round"
+            fill="none"
+            strokeDasharray={circumference}
+            strokeDashoffset={dashOffset}
+          />
+        </Svg>
+        {/* The dot rides the arc's leading edge. */}
+        <Animated.View style={[s.ring, { transform: [{ rotate }] }]}>
           <View style={s.ringDot} />
         </Animated.View>
         <View style={[s.innerRing, { width: (size * 2) / 3, height: (size * 2) / 3, borderRadius: size / 3 }]} />
@@ -510,9 +544,10 @@ const s = StyleSheet.create({
   diagPage: { flexGrow: 1 },
   headerSpacer: { width: 45 },
   ringBox: { alignSelf: "center", marginTop: 45, alignItems: "center", justifyContent: "center" },
-  ring: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, borderWidth: 3, borderColor: GREEN },
-  // Centered on the ring's stroke: 3pt border, 10pt dot.
-  ringDot: { position: "absolute", top: -6.5, left: "50%", marginLeft: -5, width: 10, height: 10, borderRadius: 5, backgroundColor: GREEN },
+  ringSvg: { position: "absolute", transform: [{ rotate: "-90deg" }] },
+  ring: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0 },
+  // Centered on the arc's stroke, which sits RING_PAD in from the edge.
+  ringDot: { position: "absolute", top: RING_PAD - 5, left: "50%", marginLeft: -5, width: 10, height: 10, borderRadius: 5, backgroundColor: GREEN },
   innerRing: { borderWidth: 1.5, borderColor: "#E3E3E3" },
   diagTitle: { fontFamily: "Poppins_500Medium", fontSize: 32, lineHeight: 48, textAlign: "center", color: "#000", marginTop: 20 },
   diagSub: { fontFamily: "Poppins_400Regular", fontSize: 15, lineHeight: 22, textAlign: "center", color: "#000" },
