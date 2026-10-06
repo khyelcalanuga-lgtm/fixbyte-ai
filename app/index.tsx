@@ -128,10 +128,13 @@ export default function App() {
     return `data:${mime};base64,${a.base64}`;
   }
 
-  // "Scan a photo": straight to the camera, then send. Web has no camera UI, so it opens the file picker.
+  // "Scan a photo": straight to the camera, then attach it so the user can describe what happened before sending.
+  // Web has no camera UI, so it opens the file picker.
   async function scan() {
     const url = await pick(Platform.OS !== "web");
-    if (url) send(url);
+    if (!url) return;
+    setImage(url);
+    input.current?.focus();
   }
 
   function choosePhoto() {
@@ -185,13 +188,13 @@ export default function App() {
     );
   }
 
-  async function send(img = image) {
+  async function send() {
     const answers = pending
       ?.questions.flatMap((q, i) => (pending.picked[i] ? [`${q.question} ${pending.picked[i]}`] : []))
       .join("\n");
-    if (busy || (!text.trim() && !img && !answers)) return;
+    if (busy || (!text.trim() && !image && !answers)) return;
 
-    const next: Turn[] = [...turns, { role: "user", image: img ?? undefined, text: text.trim() || undefined, answers }];
+    const next: Turn[] = [...turns, { role: "user", image: image ?? undefined, text: text.trim() || undefined, answers }];
     setTurns(next);
     setResultIdx(null); // a follow-up from the Diagnosis page continues in the chat
     setStartedAt((d) => d ?? new Date());
