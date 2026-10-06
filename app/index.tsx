@@ -34,7 +34,8 @@ type Diagnosis = {
   category: "Hardware" | "Software" | "Both";
   difficulty: "Beginner-safe" | "Some skill" | "Pro repair";
   causes: { name: string; detail: string }[];
-  steps: string[];
+  steps: { title: string; detail: string; tools: string[]; warning: string }[]; // the Repair Guide
+  minutes: number;
   // Shown instead of the above on the "needs a professional" page (difficulty "Pro repair").
   problem: string;
   why: string;
@@ -101,7 +102,7 @@ export default function App() {
   const [startedAt, setStartedAt] = useState<Date | null>(null);
   const [diag, setDiag] = useState<Diag | null>(null);
   const [resultIdx, setResultIdx] = useState<number | null>(null); // turn shown on the Diagnosis page
-  const [guide, setGuide] = useState(false); // repair steps revealed on the Diagnosis page
+  const [guideStep, setGuideStep] = useState<number | null>(null); // Repair Guide step on screen, null = closed
   const scroll = useRef<ScrollView>(null);
   const input = useRef<TextInput>(null);
   const run = useRef(0); // bumped by cancel() so a late reply from a cancelled request is ignored
@@ -158,7 +159,7 @@ export default function App() {
   }
 
   function openResult(i: number) {
-    setGuide(false);
+    setGuideStep(null);
     setResultIdx(i);
   }
 
@@ -293,10 +294,12 @@ export default function App() {
       <StatusBar style="dark" />
       {diag ? (
         <Diagnosing d={diag} onCancel={cancel} />
+      ) : result && guideStep !== null ? (
+        <Guide d={result.diagnosis!} step={guideStep} onStep={setGuideStep} onClose={() => setGuideStep(null)} />
       ) : (
         <KeyboardAvoidingView style={s.flex} behavior={Platform.OS === "ios" ? "padding" : undefined}>
           {result ? (
-            <Result t={result} guide={guide} onBack={() => setResultIdx(null)} />
+            <Result t={result} onBack={() => setResultIdx(null)} />
           ) : home ? (
             <>
               <View style={s.header}>
@@ -420,7 +423,7 @@ export default function App() {
               <>
                 {result ? (
                   <View style={[s.actions, s.actionsGap]}>
-                    <Pressable onPress={() => setGuide(true)} style={s.guideBtn} accessibilityRole="button">
+                    <Pressable onPress={() => setGuideStep(0)} style={s.guideBtn} accessibilityRole="button">
                       <Feather name="tool" size={18} color={GREEN} />
                       <Text style={s.guideText}>Start repair guide</Text>
                     </Pressable>
@@ -507,9 +510,8 @@ function Bookmark({ saved, big, onPress }: { saved: boolean; big?: boolean; onPr
   );
 }
 
-function Result({ t, guide, onBack }: { t: Extract<Turn, { role: "assistant" }>; guide: boolean; onBack: () => void }) {
+function Result({ t, onBack }: { t: Extract<Turn, { role: "assistant" }>; onBack: () => void }) {
   const d = t.diagnosis!;
-  const ref = useRef<ScrollView>(null);
   const cat = TAGS.category[d.category] ?? TAGS.category.Hardware;
   const diff = TAGS.difficulty[d.difficulty] ?? TAGS.difficulty["Some skill"];
   const pro = d.difficulty === "Pro repair";
@@ -540,8 +542,7 @@ function Result({ t, guide, onBack }: { t: Extract<Turn, { role: "assistant" }>;
         )}
       </View>
 
-      {/* Scrolls to the repair steps when "Start repair guide" reveals them. */}
-      <ScrollView ref={ref} style={s.flex} contentContainerStyle={s.result} onContentSizeChange={() => guide && ref.current?.scrollToEnd()}>
+      <ScrollView style={s.flex} contentContainerStyle={s.result}>
         <View style={s.symptom}>
           <View style={s.symptomDot} />
           <Text style={s.symptomText}>{d.summary}</Text>
@@ -569,7 +570,7 @@ function Result({ t, guide, onBack }: { t: Extract<Turn, { role: "assistant" }>;
               </View>
             </View>
             <View style={s.nowCard}>
-              <Text style={s.nowLabel}>DO THIS NOW</Text>
+              <Text style={s.monoLabel}>DO THIS NOW</Text>
               {d.now.map((n, i) => (
                 <View key={i} style={s.nowRow}>
                   <Feather name={n.icon as FeatherName} size={17} color="#000" style={s.nowIcon} />
@@ -605,27 +606,102 @@ function Result({ t, guide, onBack }: { t: Extract<Turn, { role: "assistant" }>;
                 </View>
               ))}
             </View>
-
-            {/* ponytail: inline steps until there's a repair-guide screen design */}
-            {guide && (
-              <>
-                <Text style={s.sectionTitle}>Repair steps</Text>
-                <View style={s.list}>
-                  {d.steps.map((step, i) => (
-                    <View key={i} style={s.listRow}>
-                      <View style={[s.num, s.numDark]}>
-                        <Text style={[s.numText, s.tagTextLight]}>{i + 1}</Text>
-                      </View>
-                      <Text style={s.listText}>{step}</Text>
-                    </View>
-                  ))}
-                </View>
-              </>
-            )}
           </>
         )}
       </ScrollView>
     </>
+  );
+}
+
+function minutesLabel(m: number) {
+  if (!m || m < 60) return `About ${Math.max(1, Math.round(m || 0))} min`;
+  const h = Math.round((m / 60) * 2) / 2; // nearest half hour
+  return `About ${h} hr${h === 1 ? "" : "s"}`;
+}
+
+function Guide({ d, step, onStep, onClose }: { d: Diagnosis; step: number; onStep: (i: number) => void; onClose: () => void }) {
+  const st = d.steps[step];
+  const last = step === d.steps.length - 1;
+  const cat = TAGS.category[d.category] ?? TAGS.category.Hardware;
+  const diff = TAGS.difficulty[d.difficulty] ?? TAGS.difficulty["Some skill"];
+
+  return (
+    <View style={s.flex}>
+      <View style={s.header}>
+        <Pressable onPress={onClose} style={s.circle} accessibilityLabel="Back to diagnosis">
+          <Feather name="arrow-left" size={20} color="#000" />
+        </Pressable>
+        <Text style={s.title}>Repair Guide</Text>
+        <View style={s.stepCount} accessibilityLabel={`Step ${step + 1} of ${d.steps.length}`}>
+          <Text style={s.stepCountText}>
+            {step + 1} | {d.steps.length}
+          </Text>
+        </View>
+      </View>
+
+      {/* Done steps black, current green, upcoming gray. */}
+      <View style={s.segments}>
+        {d.steps.map((_, i) => (
+          <View key={i} style={[s.segment, i < step && s.segmentDone, i === step && s.segmentNow]} />
+        ))}
+      </View>
+
+      {/* Keyed by step so each step starts scrolled to the top. */}
+      <ScrollView key={step} style={s.flex} contentContainerStyle={s.result}>
+        <View style={[s.tags, s.guideTags]}>
+          <View style={[s.tag, s[diff.style]]}>
+            <Feather name={diff.icon} size={16} color="#000" />
+            <Text style={s.tagText}>{d.difficulty}</Text>
+          </View>
+          <View style={[s.tag, s.tagWhite]}>
+            <Feather name="clock" size={16} color="#000" />
+            <Text style={s.tagText}>{minutesLabel(d.minutes)}</Text>
+          </View>
+          <View style={[s.tag, s.tagWhite]}>
+            <Feather name={cat.icon} size={16} color="#000" />
+            <Text style={s.tagText}>{cat.label}</Text>
+          </View>
+        </View>
+
+        <View style={s.stepCard}>
+          <Text style={s.monoLabel}>STEP {String(step + 1).padStart(2, "0")}</Text>
+          <Text style={s.stepTitle}>{st.title}</Text>
+        </View>
+        <Text style={s.stepDetail}>{st.detail}</Text>
+
+        {st.tools.length > 0 && (
+          <>
+            <Text style={[s.monoLabel, s.toolsLabel]}>YOU'LL NEED</Text>
+            <View style={s.tags}>
+              {st.tools.map((tool) => (
+                <View key={tool} style={[s.tag, s.toolChip]}>
+                  <Text style={s.tagText}>{tool}</Text>
+                </View>
+              ))}
+            </View>
+          </>
+        )}
+
+        {!!st.warning && (
+          <View style={s.warnCard}>
+            <Feather name="alert-circle" size={22} color={GREEN} />
+            <Text style={s.warnText}>{st.warning}</Text>
+          </View>
+        )}
+      </ScrollView>
+
+      <View style={[s.footer, s.actions]}>
+        <Pressable onPress={() => (step === 0 ? onClose() : onStep(step - 1))} style={s.backBtn} accessibilityRole="button">
+          <Text style={s.backText}>Back</Text>
+        </Pressable>
+        <Pressable onPress={() => (last ? onClose() : onStep(step + 1))} style={s.nextBtn} accessibilityRole="button">
+          <Text style={s.nextText}>{last ? "Finish" : "Next step"}</Text>
+          <View style={s.nextIcon}>
+            <Feather name={last ? "check" : "arrow-right"} size={16} color="#000" />
+          </View>
+        </Pressable>
+      </View>
+    </View>
   );
 }
 
@@ -883,11 +959,9 @@ const s = StyleSheet.create({
   list: { gap: 16, marginTop: 20 },
   listRow: { flexDirection: "row", alignItems: "flex-start", gap: 11 },
   num: { width: 20, height: 20, borderRadius: 10, backgroundColor: "#E3E3E3", alignItems: "center", justifyContent: "center", marginTop: 1 },
-  numDark: { backgroundColor: "#000" },
   numText: { fontFamily: "Poppins_500Medium", fontSize: 10, lineHeight: 14, color: "#000" },
   listText: { flex: 1, fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 20, color: "#000" },
   listLead: { fontFamily: "Poppins_500Medium" },
-  sectionTitle: { fontFamily: "Poppins_600SemiBold", fontSize: 15, lineHeight: 22, color: "#000", marginTop: 28 },
   actions: { flexDirection: "row", alignItems: "center", gap: 10 },
   actionsGap: { marginBottom: 12 },
   proCard: { backgroundColor: "#000", borderRadius: 25, padding: 20, marginTop: 16 },
@@ -899,7 +973,7 @@ const s = StyleSheet.create({
   proChip: { height: 30, paddingHorizontal: 10, borderRadius: 100, backgroundColor: "#2A2A2A", justifyContent: "center" },
   proChipText: { fontFamily: "Poppins_400Regular", fontSize: 13, color: "#fff" },
   nowCard: { backgroundColor: "#fff", borderRadius: 25, padding: 20, marginTop: 20, gap: 15 },
-  nowLabel: { fontFamily: MONO, fontSize: 11, letterSpacing: 1, color: "rgba(0,0,0,0.5)" },
+  monoLabel: { fontFamily: MONO, fontSize: 11, letterSpacing: 1, color: "rgba(0,0,0,0.5)" },
   nowRow: { flexDirection: "row", alignItems: "flex-start", gap: 18 },
   nowIcon: { marginTop: 1 },
   nowText: { flex: 1, fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 20, color: "#000" },
@@ -907,6 +981,26 @@ const s = StyleSheet.create({
   shopBtn: { height: 58 },
   shopText: { fontFamily: "Poppins_500Medium", fontSize: 15, color: "#fff" },
   bigCircle: { width: 58, height: 58 },
+
+  stepCount: { height: 45, paddingHorizontal: 20, borderRadius: 100, backgroundColor: "#fff", alignItems: "center", justifyContent: "center" },
+  stepCountText: { fontFamily: "Poppins_500Medium", fontSize: 15, color: "#000" },
+  segments: { flexDirection: "row", gap: 5, paddingHorizontal: 20, marginTop: 16 },
+  segment: { flex: 1, height: 6, borderRadius: 3, backgroundColor: "#DDDDDD" },
+  segmentDone: { backgroundColor: "#000" },
+  segmentNow: { backgroundColor: GREEN },
+  guideTags: { marginTop: 4 },
+  stepCard: { backgroundColor: "#fff", borderRadius: 25, padding: 20, marginTop: 20 },
+  stepTitle: { fontFamily: "Poppins_500Medium", fontSize: 20, lineHeight: 28, color: "#000", marginTop: 4 },
+  stepDetail: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 20, color: "#000", marginTop: 15, paddingHorizontal: 10 },
+  toolsLabel: { marginTop: 20, marginBottom: -2 },
+  toolChip: { backgroundColor: "#fff", paddingHorizontal: 10 },
+  warnCard: { flexDirection: "row", alignItems: "center", gap: 11, backgroundColor: "#000", borderRadius: 25, padding: 20, marginTop: 10 },
+  warnText: { flex: 1, fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 20, color: "#fff" },
+  backBtn: { width: 138, height: 58, borderRadius: 100, backgroundColor: "#fff", alignItems: "center", justifyContent: "center" },
+  backText: { fontFamily: "Poppins_500Medium", fontSize: 15, color: "#000" },
+  nextBtn: { flex: 1, height: 58, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, borderRadius: 100, backgroundColor: "#000" },
+  nextText: { fontFamily: "Poppins_500Medium", fontSize: 15, color: "#fff" },
+  nextIcon: { width: 30, height: 30, borderRadius: 15, backgroundColor: GREEN, alignItems: "center", justifyContent: "center" },
   guideBtn: { flex: 1, height: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, borderRadius: 100, backgroundColor: "#000" },
   guideText: { fontFamily: "Poppins_400Regular", fontSize: 15, color: "#fff" },
   savedBtn: { backgroundColor: "#000" },

@@ -11,7 +11,10 @@ Once the user has answered, leave "questions" empty and fill "diagnosis":
 "category": whether the fix is "Hardware", "Software" or "Both";
 "difficulty": "Beginner-safe" if a beginner can do the fix safely at home, "Some skill" if it needs tools or care, "Pro repair" if it needs a professional;
 "causes": the 2-3 possible causes, most likely first, each with a "name" of 2-6 words and a "detail" of one or two sentences saying why;
-"steps": the repair steps (one step per item, no numbers), easiest and cheapest first.
+"steps": the repair guide, 3-6 steps in order, each with a "title" (2-5 word instruction, like "Lift the screen gently"),
+a "detail" (2-4 sentences of exact instructions), "tools" (things needed for that step, 1-3 words each, empty if none)
+and a "warning" (when to stop in that step for safety, like "Stop if the battery looks swollen", or empty if none);
+"minutes": roughly how long the whole repair takes.
 The app shows a "needs a professional" page for "Pro repair" verdicts, so in every diagnosis also fill:
 "problem": the problem itself in 2-4 words (like "Swollen battery");
 "why": one or two sentences on what is wrong and why it isn't a safe home fix (or, if it is, why it's manageable);
@@ -70,7 +73,20 @@ const SCHEMA = {
             required: ["name", "detail"],
           },
         },
-        steps: { type: "array", items: { type: "string" } },
+        steps: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              title: { type: "string" },
+              detail: { type: "string" },
+              tools: { type: "array", items: { type: "string" } },
+              warning: { type: "string" },
+            },
+            required: ["title", "detail", "tools", "warning"],
+          },
+        },
+        minutes: { type: "integer" },
         problem: { type: "string" },
         why: { type: "string" },
         risk: { type: "string", enum: ["Low risk", "Medium risk", "High risk"] },
@@ -87,7 +103,7 @@ const SCHEMA = {
         shopSearch: { type: "string" },
       },
       required: [
-        "summary", "title", "category", "difficulty", "causes", "steps",
+        "summary", "title", "category", "difficulty", "causes", "steps", "minutes",
         "problem", "why", "risk", "confidence", "now", "shopSearch",
       ],
     },
@@ -103,7 +119,7 @@ type Diagnosis = {
   category: string;
   difficulty: string;
   causes: { name: string; detail: string }[];
-  steps: string[];
+  steps: { title: string; detail: string; tools: string[]; warning: string }[];
   problem: string;
   why: string;
   now: { icon: string; text: string }[];
@@ -122,7 +138,7 @@ function diagnosisText(d: Diagnosis) {
     "Possible causes:",
     ...numbered(d.causes.map((c) => `${c.name}: ${c.detail}`)),
     "Repair steps:",
-    ...numbered(d.steps),
+    ...numbered(d.steps.map((st) => `${st.title}: ${st.detail}`)),
   ].join("\n");
 }
 
