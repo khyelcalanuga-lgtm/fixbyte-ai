@@ -67,7 +67,8 @@ const TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 const GREEN = "#7CEB5A";
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const NATIVE = Platform.OS !== "web"; // Animated's native driver doesn't exist on web
-const MIN_DIAG_MS = 2500; // shortest time the Diagnosing screen stays up
+const STEP_MS = 900; // time each already-known checklist row spends "in progress"
+const MIN_DIAG_MS = 3000; // shortest time the Diagnosing screen stays up, so row 3 is visibly in progress too
 const RING_PAD = 6; // inset of the progress arc, so its 10pt dot isn't clipped
 // Animated adds collapsable={false}, which react-native-svg's web build forwards to the DOM <circle> (console error).
 const AnimatedCircle = Animated.createAnimatedComponent(
@@ -202,10 +203,18 @@ export default function App() {
     const ctrl = new AbortController();
     abort.current = ctrl;
     // Answering the clarifying questions gets the final diagnosis: show the Diagnosing screen meanwhile.
-    // Device and finding were already worked out in the question turn, so those rows start as done.
+    // Device and finding were already worked out in the question turn, so rows 1-2 just step through
+    // "in progress" to done on a timer; row 3 then waits on the real request.
     if (pending && answers) {
       const photo = next.some((t) => t.role === "user" && !!t.image);
-      setDiag({ photo, device: pending.device, finding: pending.finding, stage: 3 });
+      setDiag({ photo, device: pending.device, finding: pending.finding, stage: 1 });
+      (async () => {
+        for (const stage of [2, 3]) {
+          await wait(STEP_MS);
+          if (id !== run.current) return;
+          setDiag((d) => (d && d.stage < stage ? { ...d, stage } : d));
+        }
+      })();
     }
     try {
       const r = await fetch("/api/chat", {
@@ -627,16 +636,20 @@ function Diagnosing({ d, onCancel }: { d: Diag; onCancel: () => void }) {
   const circumference = 2 * Math.PI * r;
 
   // The diagnosis is one request with no real percentage, so the arc follows the checklist:
-  // half on open (two rows done), easing toward 85% while waiting, then 92% and 100% as the last rows tick.
+  // a step per known row, easing toward 85% while the request runs, then 92% and 100% as the last rows tick.
   // useNativeDriver is off: the native driver can't animate SVG stroke props.
   const progress = useRef(new Animated.Value(0)).current;
   useEffect(() => {
     const to = (toValue: number, duration: number, easing = Easing.out(Easing.quad)) =>
       Animated.timing(progress, { toValue, duration, easing, useNativeDriver: false });
     const anim =
-      d.stage <= 3
-        ? Animated.sequence([to(0.5, 700), to(0.85, 12000, Easing.out(Easing.cubic))])
-        : to(d.stage === 4 ? 0.92 : 1, 450);
+      d.stage === 1
+        ? to(0.2, 600)
+        : d.stage === 2
+          ? to(0.4, 600)
+          : d.stage === 3
+            ? Animated.sequence([to(0.55, 500), to(0.85, 12000, Easing.out(Easing.cubic))])
+            : to(d.stage === 4 ? 0.92 : 1, 450);
     anim.start();
     return () => anim.stop();
   }, [d.stage, progress]);
@@ -691,10 +704,8 @@ function Diagnosing({ d, onCancel }: { d: Diag; onCancel: () => void }) {
           const state = i < d.stage - 1 ? "done" : i === d.stage - 1 ? "active" : "next";
           return (
             <View key={i} style={s.stepRow}>
-              {/* Keyed by state so the icon remounts, and its entry animation plays, when the row changes state.
-                  The two rows already done on open check off one after the other. */}
-              <StepIcon key={state} state={state} delay={d.stage === 3 && i < 2 ? 200 + i * 350 : 0} />
-
+              {/* Keyed by state so the icon remounts, and its entry animation plays, when the row changes state. */}
+              <StepIcon key={state} state={state} />
               <Text style={[s.stepLabel, state === "next" && s.muted]}>{label}</Text>
               <Text style={[s.stepStatus, state === "active" && s.greenText]}>
                 {state === "done" ? (status || "Done").toUpperCase() : state === "active" ? "WORKING" : "NEXT"}
@@ -713,15 +724,12 @@ function Diagnosing({ d, onCancel }: { d: Diag; onCancel: () => void }) {
 }
 
 // Done: pops in. Active: pulsing dot with a ripple. Next: dashed circle slowly turning.
-function StepIcon({ state, delay }: { state: "done" | "active" | "next"; delay: number }) {
+function StepIcon({ state }: { state: "done" | "active" | "next" }) {
   const v = useRef(new Animated.Value(0)).current;
   useEffect(() => {
     const anim =
       state === "done"
-        ? Animated.sequence([
-            Animated.delay(delay),
-            Animated.spring(v, { toValue: 1, friction: 5, tension: 140, useNativeDriver: NATIVE }),
-          ])
+        ? Animated.spring(v, { toValue: 1, friction: 5, tension: 140, useNativeDriver: NATIVE })
         : Animated.loop(
             Animated.timing(v, {
               toValue: 1,
@@ -732,7 +740,7 @@ function StepIcon({ state, delay }: { state: "done" | "active" | "next"; delay: 
           );
     anim.start();
     return () => anim.stop();
-  }, [state, delay, v]);
+  }, [state, v]);
 
   if (state === "done") {
     return (
