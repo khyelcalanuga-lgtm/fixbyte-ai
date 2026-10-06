@@ -8,6 +8,10 @@ Once the user has answered, or you already have enough to go on, leave "question
 the most likely cause in "message", and the fix steps in "steps" (one step per item, no numbers), easiest and cheapest first.
 Flag safety risks (swollen batteries, mains power, data loss) and say plainly when it's time for a professional or a replacement.
 If the photo is unclear, say what you'd need to see.
+Always fill the short status labels the app shows on its "Diagnosing" screen, 1-3 words each:
+"device": the device you identified, make and model if you can tell (like "iPhone 13"), otherwise its type (like "Laptop");
+"finding": the main damage or symptom (like "Crack found", "Water damage", "No sound");
+"software": whether software could be the cause (like "Not the cause", "Possible cause", "Likely cause").
 Write plain text only: no markdown, no ** or # symbols. The app shows your reply as-is.`;
 
 // Structured output, so the app can render questions as tappable answer chips.
@@ -24,8 +28,11 @@ const SCHEMA = {
     },
     message: { type: "string" },
     steps: { type: "array", items: { type: "string" } },
+    device: { type: "string" },
+    finding: { type: "string" },
+    software: { type: "string" },
   },
-  required: ["questions", "message"],
+  required: ["questions", "message", "device", "finding", "software"],
 };
 
 const COUNTS = ["", "One quick check", "Two quick checks", "Three quick checks"];
@@ -58,7 +65,8 @@ export async function POST(req: Request) {
           // Written here, not by the model: it kept saying "Two" whatever the actual count.
           const n = questions.length;
           const message = n ? `Got it. ${COUNTS[n] ?? `${n} quick checks`} so I can narrow it down:` : out.message;
-          return Response.json({ text: [message, ...steps].join("\n\n"), questions });
+          const { device, finding, software } = out;
+          return Response.json({ text: [message, ...steps].join("\n\n"), questions, device, finding, software });
         } catch {
           return Response.json({ text: raw, questions: [] }); // model ignored the schema; show it as plain text
         }

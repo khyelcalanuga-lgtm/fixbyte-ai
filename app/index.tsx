@@ -1,6 +1,8 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Alert,
+  Animated,
+  Easing,
   Image,
   KeyboardAvoidingView,
   Platform,
@@ -10,6 +12,7 @@ import {
   Text,
   TextInput,
   View,
+  useWindowDimensions,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
@@ -25,11 +28,21 @@ type Question = { question: string; options: string[] };
 // What the screen shows. toApi() turns these into OpenAI-style messages for the API route.
 type Turn =
   | { role: "user"; image?: string; text?: string; answers?: string }
-  | { role: "assistant"; text: string; questions: Question[]; picked: (string | undefined)[] };
+  | {
+      role: "assistant";
+      text: string;
+      questions: Question[];
+      picked: (string | undefined)[];
+      device?: string; // short status labels for the Diagnosing screen
+      finding?: string;
+    };
 type Part = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
+// Diagnosing screen state. stage = the 1-based checklist row in progress; 5 = all done.
+type Diag = { photo: boolean; device?: string; finding?: string; software?: string; stage: number };
 
 const TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 const GREEN = "#7CEB5A";
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function toApi(turns: Turn[]) {
   return turns.map((t) => {
@@ -53,8 +66,11 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [startedAt, setStartedAt] = useState<Date | null>(null);
+  const [diag, setDiag] = useState<Diag | null>(null);
   const scroll = useRef<ScrollView>(null);
   const input = useRef<TextInput>(null);
+  const run = useRef(0); // bumped by cancel() so a late reply from a cancelled request is ignored
+  const abort = useRef<AbortController | null>(null);
 
   const last = turns[turns.length - 1];
   const pending = last?.role === "assistant" && last.questions.length > 0 && !busy ? last : null;
@@ -136,22 +152,70 @@ export default function App() {
     setImage(null);
     setError("");
     setBusy(true);
+    const id = ++run.current;
+    const ctrl = new AbortController();
+    abort.current = ctrl;
+    // Answering the clarifying questions gets the final diagnosis: show the Diagnosing screen meanwhile.
+    // Device and finding were already worked out in the question turn, so those rows start as done.
+    if (pending && answers) {
+      const photo = next.some((t) => t.role === "user" && !!t.image);
+      setDiag({ photo, device: pending.device, finding: pending.finding, stage: 3 });
+    }
     try {
       const r = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(toApi(next)),
+        signal: ctrl.signal,
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error);
+      if (id !== run.current) return;
+      if (pending && answers) {
+        // Tick off the last rows before revealing the answer.
+        setDiag((d) => d && { ...d, software: data.software, stage: 4 });
+        await wait(700);
+        if (id !== run.current) return;
+        setDiag((d) => d && { ...d, stage: 5 });
+        await wait(500);
+        if (id !== run.current) return;
+      }
       const questions: Question[] = data.questions ?? [];
-      setTurns([...next, { role: "assistant", text: data.text, questions, picked: questions.map(() => undefined) }]);
+      setTurns([
+        ...next,
+        {
+          role: "assistant",
+          text: data.text,
+          questions,
+          picked: questions.map(() => undefined),
+          device: data.device,
+          finding: data.finding,
+        },
+      ]);
     } catch (err) {
+      if (id !== run.current) return; // cancelled; cancel() already restored the screen
       setTurns(turns); // roll back so history stays valid (keeps any picked answers)
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusy(false);
+      if (id === run.current) {
+        setBusy(false);
+        setDiag(null);
+      }
     }
+  }
+
+  // Back to the questions with answers still picked, and any typed text or photo restored.
+  function cancel() {
+    run.current++;
+    abort.current?.abort();
+    const u = turns[turns.length - 1];
+    if (u?.role === "user") {
+      setText(u.text ?? "");
+      if (u.image) setImage(u.image);
+    }
+    setTurns((ts) => ts.slice(0, -1));
+    setDiag(null);
+    setBusy(false);
   }
 
   if (!fontsLoaded) return null;
@@ -162,6 +226,9 @@ export default function App() {
   return (
     <SafeAreaView style={s.screen} edges={["top", "left", "right"]}>
       <StatusBar style="dark" />
+      {diag ? (
+        <Diagnosing d={diag} onCancel={cancel} />
+      ) : (
       <KeyboardAvoidingView style={s.flex} behavior={Platform.OS === "ios" ? "padding" : undefined}>
         {home ? (
           <View style={s.header}>
@@ -292,7 +359,81 @@ export default function App() {
           </View>
         </View>
       </KeyboardAvoidingView>
+      )}
     </SafeAreaView>
+  );
+}
+
+function Diagnosing({ d, onCancel }: { d: Diag; onCancel: () => void }) {
+  const { width, height } = useWindowDimensions();
+  const size = Math.min(297, width - 105, height * 0.34); // 297pt on the 402x874 design, smaller on short phones
+  const spin = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.timing(spin, { toValue: 1, duration: 2400, easing: Easing.linear, useNativeDriver: Platform.OS !== "web" }),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [spin]);
+  const rotate = spin.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] });
+
+  const rows: [string, string | undefined][] = [
+    ["Identified the device", d.device],
+    [d.photo ? "Scanned the photo for damage" : "Reviewed your symptoms", d.finding],
+    ["Checking software signs", d.software],
+    ["Writing your repair steps", "Done"],
+  ];
+
+  return (
+    <ScrollView style={s.flex} contentContainerStyle={s.diagPage}>
+      <View style={s.header}>
+        <Pressable onPress={onCancel} style={s.circle} accessibilityLabel="Back">
+          <Feather name="arrow-left" size={20} color="#000" />
+        </Pressable>
+        <Text style={s.title}>Diagnosing</Text>
+        <View style={s.headerSpacer} />
+      </View>
+
+      <View style={[s.ringBox, { width: size, height: size }]}>
+        <Animated.View style={[s.ring, { borderRadius: size / 2, transform: [{ rotate }] }]}>
+          <View style={s.ringDot} />
+        </Animated.View>
+        <View style={[s.innerRing, { width: (size * 2) / 3, height: (size * 2) / 3, borderRadius: size / 3 }]} />
+      </View>
+
+      <Text style={s.diagTitle}>Looking closely</Text>
+      <Text style={s.diagSub}>This usually takes a few seconds.</Text>
+
+      <View style={s.diagCard}>
+        {rows.map(([label, status], i) => {
+          const state = i < d.stage - 1 ? "done" : i === d.stage - 1 ? "active" : "next";
+          return (
+            <View key={i} style={s.stepRow}>
+              {state === "done" ? (
+                <View style={[s.stepIcon, s.stepDone]}>
+                  <Feather name="check" size={16} color={GREEN} />
+                </View>
+              ) : state === "active" ? (
+                <View style={[s.stepIcon, s.stepActive]}>
+                  <View style={s.stepDot} />
+                </View>
+              ) : (
+                <View style={[s.stepIcon, s.stepNext]} />
+              )}
+              <Text style={[s.stepLabel, state === "next" && s.muted]}>{label}</Text>
+              <Text style={[s.stepStatus, state === "active" && s.greenText]}>
+                {state === "done" ? (status || "Done").toUpperCase() : state === "active" ? "WORKING" : "NEXT"}
+              </Text>
+            </View>
+          );
+        })}
+      </View>
+
+      <View style={s.flex} />
+      <Pressable onPress={onCancel} style={s.cancel} accessibilityRole="button">
+        <Text style={s.cancelText}>Cancel</Text>
+      </Pressable>
+    </ScrollView>
   );
 }
 
@@ -365,4 +506,27 @@ const s = StyleSheet.create({
   input: { flex: 1, height: "100%", marginLeft: 15, fontFamily: "Poppins_400Regular", fontSize: 15, color: "#000" },
   send: { width: 45, height: 45, borderRadius: 100, backgroundColor: GREEN, alignItems: "center", justifyContent: "center" },
   disabled: { opacity: 0.5 },
+
+  diagPage: { flexGrow: 1 },
+  headerSpacer: { width: 45 },
+  ringBox: { alignSelf: "center", marginTop: 45, alignItems: "center", justifyContent: "center" },
+  ring: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, borderWidth: 3, borderColor: GREEN },
+  // Centered on the ring's stroke: 3pt border, 10pt dot.
+  ringDot: { position: "absolute", top: -6.5, left: "50%", marginLeft: -5, width: 10, height: 10, borderRadius: 5, backgroundColor: GREEN },
+  innerRing: { borderWidth: 1.5, borderColor: "#E3E3E3" },
+  diagTitle: { fontFamily: "Poppins_500Medium", fontSize: 32, lineHeight: 48, textAlign: "center", color: "#000", marginTop: 20 },
+  diagSub: { fontFamily: "Poppins_400Regular", fontSize: 15, lineHeight: 22, textAlign: "center", color: "#000" },
+  diagCard: { backgroundColor: "#fff", borderRadius: 25, marginHorizontal: 20, marginTop: 16, paddingHorizontal: 20, paddingVertical: 25, gap: 20 },
+  stepRow: { flexDirection: "row", alignItems: "center" },
+  stepIcon: { width: 30, height: 30, borderRadius: 15, alignItems: "center", justifyContent: "center" },
+  stepDone: { backgroundColor: "#000" },
+  stepActive: { borderWidth: 1.5, borderColor: GREEN, backgroundColor: "#fff" },
+  stepDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: GREEN },
+  stepNext: { borderWidth: 1.5, borderColor: "rgba(0,0,0,0.4)", borderStyle: "dashed" },
+  stepLabel: { flex: 1, marginLeft: 10, fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 20, color: "#000" },
+  stepStatus: { maxWidth: 95, marginLeft: 8, fontFamily: "Poppins_400Regular", fontSize: 12, lineHeight: 17, textAlign: "right", color: "rgba(0,0,0,0.4)" },
+  muted: { color: "rgba(0,0,0,0.4)" },
+  greenText: { color: GREEN },
+  cancel: { alignSelf: "center", paddingHorizontal: 24, paddingVertical: 16, marginBottom: 12 },
+  cancelText: { fontFamily: "Poppins_600SemiBold", fontSize: 15, color: "#000" },
 });
