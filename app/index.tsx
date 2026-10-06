@@ -19,7 +19,8 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import * as ImagePicker from "expo-image-picker";
-import { Feather } from "@expo/vector-icons";
+import { Feather, FontAwesome } from "@expo/vector-icons";
+import * as Location from "expo-location";
 import Svg, { Circle, type CircleProps } from "react-native-svg";
 import { useFonts } from "expo-font";
 // Per-weight imports: the package root pulls in all 18 Poppins files.
@@ -43,6 +44,7 @@ type Diagnosis = {
   confidence: number;
   now: { icon: string; text: string }[];
   shopSearch: string;
+  shopServices: string[]; // filter chips on the Repair Shops page
 };
 type FeatherName = keyof typeof Feather.glyphMap;
 // What the screen shows. toApi() turns these into OpenAI-style messages for the API route.
@@ -103,6 +105,7 @@ export default function App() {
   const [diag, setDiag] = useState<Diag | null>(null);
   const [resultIdx, setResultIdx] = useState<number | null>(null); // turn shown on the Diagnosis page
   const [guideStep, setGuideStep] = useState<number | null>(null); // Repair Guide step on screen, null = closed
+  const [showShops, setShowShops] = useState(false); // Repair Shops page, opened from "Find a repair shop"
   const scroll = useRef<ScrollView>(null);
   const input = useRef<TextInput>(null);
   const run = useRef(0); // bumped by cancel() so a late reply from a cancelled request is ignored
@@ -163,6 +166,7 @@ export default function App() {
 
   function openResult(i: number) {
     setGuideStep(null);
+    setShowShops(false);
     setResultIdx(i);
   }
 
@@ -299,6 +303,8 @@ export default function App() {
         <Diagnosing d={diag} onCancel={cancel} />
       ) : result && guideStep !== null ? (
         <Guide d={result.diagnosis!} step={guideStep} onStep={setGuideStep} onClose={() => setGuideStep(null)} />
+      ) : result && showShops ? (
+        <Shops t={result} onBack={() => setShowShops(false)} />
       ) : (
         <KeyboardAvoidingView style={s.flex} behavior={Platform.OS === "ios" ? "padding" : undefined}>
           {result ? (
@@ -416,7 +422,7 @@ export default function App() {
               <>
                 <Text style={s.disclaimer}>FixByte AI gives guidance only. It can't inspect your device in person.</Text>
                 <View style={s.actions}>
-                  <Pressable onPress={() => findShop(result.diagnosis!.shopSearch)} style={[s.guideBtn, s.shopBtn]} accessibilityRole="link">
+                  <Pressable onPress={() => setShowShops(true)} style={[s.guideBtn, s.shopBtn]} accessibilityRole="button">
                     <Text style={s.shopText}>Find a repair shop</Text>
                   </Pressable>
                   <Bookmark saved={!!result.saved} big onPress={() => toggleSaved(resultIdx!)} />
@@ -495,9 +501,211 @@ const DEVICE_ICONS: Record<string, FeatherName> = {
 };
 const MONO = Platform.select({ ios: "Menlo", default: "monospace" });
 
-function findShop(query: string) {
-  // Universal Maps link: opens Google Maps (or the browser), searching around the user's location.
-  Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${query} near me`)}`);
+type Shop = {
+  id: string;
+  name: string;
+  km?: number;
+  rating?: number;
+  reviews?: number;
+  openNow?: boolean;
+  closes?: string; // ISO times from Google Places
+  opens?: string;
+  phone?: string;
+};
+
+// "8 PM", "8:30 PM", or "Tue 9 AM" when it isn't today.
+function clock(iso: string) {
+  const d = new Date(iso);
+  const t = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }).replace(":00", "");
+  return d.toDateString() === new Date().toDateString() ? t : `${d.toLocaleDateString([], { weekday: "short" })} ${t}`;
+}
+
+function hours(shop: Shop) {
+  if (shop.openNow === undefined) return "";
+  if (shop.openNow) return shop.closes ? `Open until ${clock(shop.closes)}` : "Open now";
+  return shop.opens ? `Opens ${clock(shop.opens)}` : "Closed";
+}
+
+const NEEDS = { "Pro repair": "Needs a pro", "Some skill": "Some skill", "Beginner-safe": "Beginner-safe" } as const;
+
+function Shops({ t, onBack }: { t: Extract<Turn, { role: "assistant" }>; onBack: () => void }) {
+  const d = t.diagnosis!;
+  const [loc, setLoc] = useState<{ lat: number; lng: number } | null>(null);
+  const [area, setArea] = useState<{ city?: string; region?: string }>({});
+  const [nearText, setNearText] = useState(""); // what's typed in the location field
+  const [near, setNear] = useState(""); // submitted: search there instead of around the user
+  const [openNow, setOpenNow] = useState(true);
+  const [service, setService] = useState<string | null>(null);
+  const [data, setData] = useState<{ shops: Shop[]; map?: string } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [expanded, setExpanded] = useState(0);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const perm = await Location.requestForegroundPermissionsAsync();
+        if (!perm.granted) throw new Error("Location is off. Type a city above to search there.");
+        const p = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        setLoc({ lat: p.coords.latitude, lng: p.coords.longitude });
+        // City and region names for the labels; reverse geocoding isn't available on web, so they're optional.
+        Location.reverseGeocodeAsync(p.coords)
+          .then(([a]) => setArea({ city: a?.city ?? a?.subregion ?? undefined, region: a?.region ?? undefined }))
+          .catch(() => {});
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!loc && !near) return;
+    let live = true; // ignore a slower, older search finishing after a newer one
+    setLoading(true);
+    setError("");
+    fetch("/api/shops", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: service ?? d.shopSearch, lat: loc?.lat, lng: loc?.lng, near: near || undefined, openNow }),
+    })
+      .then(async (r) => {
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error);
+        if (live) {
+          setData(j);
+          setExpanded(0);
+        }
+      })
+      .catch((e) => live && setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => live && setLoading(false));
+    return () => {
+      live = false;
+    };
+  }, [loc, near, openNow, service, d.shopSearch]);
+
+  const shops = data?.shops ?? [];
+  const where = near || area.region;
+  const icon = DEVICE_ICONS[t.deviceType ?? ""] ?? "cpu";
+
+  return (
+    <View style={s.flex}>
+      <View style={s.header}>
+        <Pressable onPress={onBack} style={s.circle} accessibilityLabel="Back to diagnosis">
+          <Feather name="arrow-left" size={20} color="#000" />
+        </Pressable>
+        <Text style={s.title}>Repair Shops</Text>
+        <View style={s.circle} accessibilityLabel={t.device}>
+          <Feather name={icon} size={20} color="#000" />
+        </View>
+      </View>
+
+      <ScrollView style={s.flex} contentContainerStyle={s.result} keyboardShouldPersistTaps="handled">
+        <View style={s.caseCard}>
+          <Feather name={icon} size={24} color="#fff" />
+          <Text style={s.caseText} numberOfLines={2}>
+            {t.device && <Text style={s.caseDevice}>{t.device} · </Text>}
+            {d.summary}
+          </Text>
+          <View style={s.casePill}>
+            <Text style={s.casePillText}>{NEEDS[d.difficulty] ?? d.difficulty}</Text>
+          </View>
+        </View>
+
+        <View style={s.nearBox}>
+          <Feather name="map-pin" size={17} color="#000" />
+          <TextInput
+            value={nearText}
+            onChangeText={setNearText}
+            onSubmitEditing={() => setNear(nearText.trim())}
+            placeholder={area.city ? `Near ${area.city}` : "Near you"}
+            placeholderTextColor="rgba(0,0,0,0.2)"
+            returnKeyType="search"
+            accessibilityLabel="Search near a place"
+            style={s.nearInput}
+          />
+        </View>
+
+        {data?.map && <Image source={{ uri: data.map }} style={s.map} accessibilityLabel="Map of nearby repair shops" />}
+
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.filters} contentContainerStyle={s.filterRow}>
+          <Pressable onPress={() => setOpenNow((v) => !v)} style={[s.filter, openNow && s.filterOn]} accessibilityState={{ selected: openNow }}>
+            <Text style={[s.filterText, openNow && s.tagTextLight]}>Open now</Text>
+          </Pressable>
+          {(d.shopServices ?? []).map((sv) => {
+            const on = service === sv;
+            return (
+              <Pressable key={sv} onPress={() => setService(on ? null : sv)} style={[s.filter, on && s.filterOn]} accessibilityState={{ selected: on }}>
+                <Text style={[s.filterText, on && s.tagTextLight]}>{sv}</Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+
+        <Text style={[s.monoLabel, s.shopCount]}>
+          {loading ? "FINDING SHOPS…" : `${shops.length} SHOP${shops.length === 1 ? "" : "S"} NEARBY${where ? ` · ${where.toUpperCase()}` : ""}`}
+        </Text>
+        {!!error && <Text style={s.error}>{error}</Text>}
+        {!loading && !error && shops.length === 0 && (
+          <Text style={[s.msgText, s.dim]}>No shops found. Try turning off "Open now" or picking another service.</Text>
+        )}
+
+        {shops.map((shop, i) => {
+          const open = i === expanded;
+          const dist = shop.km != null ? `${shop.km.toFixed(1)} KM` : "";
+          return (
+            <Pressable key={shop.id} onPress={() => setExpanded(i)} disabled={open} style={s.shopCard}>
+              <View style={s.shopRow}>
+                <View style={[s.rank, open && s.rankOn]}>
+                  <Text style={[s.rankText, !open && s.tagTextLight]}>{i + 1}</Text>
+                </View>
+                <Text style={s.shopName} numberOfLines={open ? 2 : 1}>
+                  {shop.name}
+                </Text>
+                <Text style={s.shopDist}>{open ? dist : `${dist} >`.trim()}</Text>
+              </View>
+              {open && (
+                <>
+                  <View style={s.shopRow}>
+                    {shop.rating != null && (
+                      <>
+                        <FontAwesome name="star" size={17} color="#000" />
+                        <Text style={s.shopRating}>
+                          {shop.rating.toFixed(1)} ({(shop.reviews ?? 0).toLocaleString()})
+                        </Text>
+                      </>
+                    )}
+                    <Text style={s.shopHours}>{hours(shop)}</Text>
+                  </View>
+                  <View style={s.actions}>
+                    <Pressable
+                      onPress={() =>
+                        Linking.openURL(
+                          `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(shop.name)}&destination_place_id=${shop.id}`,
+                        )
+                      }
+                      style={[s.guideBtn, s.shopBtn]}
+                      accessibilityRole="link"
+                    >
+                      <Text style={s.shopText}>Get directions</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => shop.phone && Linking.openURL(`tel:${shop.phone.replace(/[^\d+]/g, "")}`)}
+                      disabled={!shop.phone}
+                      style={[s.circle, s.bigCircle, s.callBtn, !shop.phone && s.disabled]}
+                      accessibilityLabel={shop.phone ? `Call ${shop.name}` : "No phone number listed"}
+                    >
+                      <Feather name="phone" size={20} color="#000" />
+                    </Pressable>
+                  </View>
+                </>
+              )}
+            </Pressable>
+          );
+        })}
+      </ScrollView>
+    </View>
+  );
 }
 
 function Bookmark({ saved, big, onPress }: { saved: boolean; big?: boolean; onPress: () => void }) {
@@ -984,6 +1192,31 @@ const s = StyleSheet.create({
   shopBtn: { height: 58 },
   shopText: { fontFamily: "Poppins_500Medium", fontSize: 15, color: "#fff" },
   bigCircle: { width: 58, height: 58 },
+
+  caseCard: { flexDirection: "row", alignItems: "center", gap: 18, backgroundColor: "#000", borderRadius: 25, paddingHorizontal: 24, paddingVertical: 20 },
+  caseText: { flex: 1, fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 20, color: "rgba(255,255,255,0.6)" },
+  caseDevice: { color: "#fff" },
+  casePill: { height: 20, paddingHorizontal: 12, borderRadius: 100, backgroundColor: GREEN, justifyContent: "center" },
+  casePillText: { fontFamily: "Poppins_400Regular", fontSize: 11, color: "#000" },
+  nearBox: { flexDirection: "row", alignItems: "center", gap: 15, height: 44, paddingHorizontal: 20, marginTop: 10, borderRadius: 100, backgroundColor: "#fff", borderWidth: 1, borderColor: "rgba(0,0,0,0.07)" },
+  nearInput: { flex: 1, height: "100%", fontFamily: "Poppins_400Regular", fontSize: 15, color: "#000" },
+  map: { width: "100%", height: 231, borderRadius: 25, marginTop: 10, backgroundColor: "#E8E8E8" },
+  filters: { marginTop: 10, marginHorizontal: -20 },
+  filterRow: { gap: 10, paddingHorizontal: 20 },
+  filter: { height: 40, paddingHorizontal: 20, borderRadius: 100, backgroundColor: "#fff", justifyContent: "center" },
+  filterOn: { backgroundColor: "#000" },
+  filterText: { fontFamily: "Poppins_400Regular", fontSize: 14, color: "#000" },
+  shopCount: { marginTop: 15, marginBottom: 2 },
+  shopCard: { backgroundColor: "#fff", borderRadius: 25, padding: 20, marginTop: 10, gap: 18 },
+  shopRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  rank: { width: 30, height: 30, borderRadius: 15, backgroundColor: "#000", alignItems: "center", justifyContent: "center" },
+  rankOn: { backgroundColor: GREEN },
+  rankText: { fontFamily: "Poppins_500Medium", fontSize: 12, color: "#000" },
+  shopName: { flex: 1, fontFamily: "Poppins_500Medium", fontSize: 14, lineHeight: 20, color: "#000" },
+  shopDist: { fontFamily: MONO, fontSize: 11, color: "rgba(0,0,0,0.5)" },
+  shopRating: { fontFamily: MONO, fontSize: 11, color: "rgba(0,0,0,0.5)" },
+  shopHours: { flex: 1, textAlign: "right", fontFamily: "Poppins_400Regular", fontSize: 13, color: "#000" },
+  callBtn: { borderWidth: 1, borderColor: "rgba(0,0,0,0.1)" },
 
   stepCount: { height: 45, paddingHorizontal: 20, borderRadius: 100, backgroundColor: "#fff", alignItems: "center", justifyContent: "center" },
   stepCountText: { fontFamily: "Poppins_500Medium", fontSize: 15, color: "#000" },

@@ -17,7 +17,13 @@
           "photosPermission": "FixIt Bot needs your photos to diagnose damaged hardware."
         }
       ],
-      "expo-font"
+      "expo-font",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "FixIt Bot uses your location to find repair shops near you."
+        }
+      ]
     ]
   }
 }
