@@ -21,7 +21,7 @@ import { StatusBar } from "expo-status-bar";
 import * as ImagePicker from "expo-image-picker";
 import { Feather } from "@expo/vector-icons";
 import * as Location from "expo-location";
-import Svg, { Circle, type CircleProps } from "react-native-svg";
+import Svg, { Circle, Polyline, type CircleProps } from "react-native-svg";
 import { useFonts } from "expo-font";
 // Per-weight imports: the package root pulls in all 18 Poppins files.
 import { Poppins_400Regular } from "@expo-google-fonts/poppins/400Regular";
@@ -527,6 +527,53 @@ function hours(shop: Shop) {
   return shop.opens ? `Opens ${clock(shop.opens)}` : "Closed";
 }
 
+// In-app directions from OpenStreetMap's free routing service (FOSSGIS): no key, but meant for light use.
+type Mode = "car" | "foot";
+type Step = { text: string; m: number; icon: FeatherName };
+type Route = { shopId: string; mode: Mode; line: Point[]; m: number; min: number; steps: Step[] };
+type OsrmStep = { name: string; distance: number; maneuver: { type: string; modifier?: string; exit?: number } };
+
+const TURNS: Record<string, [string, FeatherName]> = {
+  left: ["Turn left", "corner-up-left"],
+  right: ["Turn right", "corner-up-right"],
+  "sharp left": ["Turn sharp left", "corner-up-left"],
+  "sharp right": ["Turn sharp right", "corner-up-right"],
+  "slight left": ["Keep left", "corner-up-left"],
+  "slight right": ["Keep right", "corner-up-right"],
+  uturn: ["Make a U-turn", "rotate-ccw"],
+  straight: ["Continue", "arrow-up"],
+};
+
+function step({ name, distance, maneuver: { type, modifier, exit } }: OsrmStep, shop: string): Step {
+  const onto = name ? ` onto ${name}` : "";
+  if (type === "depart") return { text: `Start${name ? ` on ${name}` : ""}`, m: distance, icon: "navigation" };
+  if (type === "arrive") return { text: `Arrive at ${shop}`, m: 0, icon: "flag" };
+  if (type.includes("roundabout") || type === "rotary") {
+    return { text: `At the roundabout, take ${exit ? `exit ${exit}` : "the exit"}${onto}`, m: distance, icon: "rotate-cw" };
+  }
+  const [verb, icon] = (type !== "new name" && TURNS[modifier ?? ""]) || TURNS.straight;
+  return { text: verb + onto, m: distance, icon };
+}
+
+async function directions(from: Point, shop: Shop, mode: Mode): Promise<Route> {
+  const r = await fetch(
+    `https://routing.openstreetmap.de/routed-${mode}/route/v1/driving/${from.lng},${from.lat};${shop.lng},${shop.lat}?overview=full&geometries=geojson&steps=true`,
+  );
+  if (!r.ok) throw new Error("Directions are busy right now. Try again in a moment.");
+  const route = (await r.json()).routes?.[0];
+  if (!route) throw new Error("No route found to this shop.");
+  return {
+    shopId: shop.id,
+    mode,
+    line: route.geometry.coordinates.map(([lng, lat]: number[]) => ({ lat, lng })),
+    m: route.distance,
+    min: Math.max(1, Math.round(route.duration / 60)),
+    steps: route.legs[0].steps.map((st: OsrmStep) => step(st, shop.name)),
+  };
+}
+
+const meters = (m: number) => (m < 1000 ? `${Math.round(m / 10) * 10} M` : `${(m / 1000).toFixed(1)} KM`);
+
 const TILE = 256; // map tile size in points
 
 // Web Mercator position in world pixels at a zoom level (how map tiles are laid out).
@@ -538,10 +585,10 @@ function world({ lat, lng }: Point, zoom: number) {
 
 // Free map: Esri's light gray tiles laid out by hand, with numbered shop pins (CARTO's free tiles now need a key).
 // No native map package or API key; the attribution is required by the tiles' terms.
-function TileMap({ you, center, shops }: { you?: Point; center: Point; shops: Shop[] }) {
+function TileMap({ you, center, shops, route }: { you?: Point; center: Point; shops: Shop[]; route?: Point[] }) {
   const [w, setW] = useState(0);
   const h = 231;
-  const points = [...shops, ...(you ? [you] : [])];
+  const points = route ? [...route] : [...shops, ...(you ? [you] : [])]; // with a route, zoom to fit just the route
   if (!points.length) points.push(center);
 
   // Closest zoom (up to street level) that still fits every pin with some padding.
@@ -567,6 +614,7 @@ function TileMap({ you, center, shops }: { you?: Point; center: Point; shops: Sh
     const q = world(p, zoom);
     return { left: q.x - left - size / 2, top: q.y - top - size / 2 };
   };
+  const line = route?.map((p) => at(p, 0)).map((q) => `${q.left},${q.top}`).join(" ");
 
   return (
     <View style={s.map} onLayout={(e) => setW(e.nativeEvent.layout.width)} accessibilityLabel="Map of nearby repair shops">
@@ -577,6 +625,13 @@ function TileMap({ you, center, shops }: { you?: Point; center: Point; shops: Sh
           style={[s.tile, { left: x * TILE - left, top: y * TILE - top }]}
         />
       ))}
+      {w > 0 && line && (
+        // A white casing under the black line keeps it readable over streets.
+        <Svg width={w} height={h} style={s.routeLine} pointerEvents="none">
+          <Polyline points={line} fill="none" stroke="#fff" strokeWidth={8} strokeLinejoin="round" strokeLinecap="round" />
+          <Polyline points={line} fill="none" stroke="#000" strokeWidth={4} strokeLinejoin="round" strokeLinecap="round" />
+        </Svg>
+      )}
       {w > 0 && you && <View style={[s.youDot, at(you, 14)]} />}
       {w > 0 &&
         shops.map((shop, i) => (
@@ -603,6 +658,24 @@ function Shops({ t, onBack }: { t: Extract<Turn, { role: "assistant" }>; onBack:
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [expanded, setExpanded] = useState(0);
+  const [route, setRoute] = useState<Route | null>(null);
+  const [routing, setRouting] = useState(false);
+  const [routeError, setRouteError] = useState("");
+  const scroll = useRef<ScrollView>(null);
+
+  async function go(shop: Shop, mode: Mode) {
+    setRouteError("");
+    if (!loc) return setRouteError("Directions need your location. Turn location on and reopen this page.");
+    setRouting(true);
+    try {
+      setRoute(await directions(loc, shop, mode));
+      scroll.current?.scrollTo({ y: 0, animated: true }); // bring the map with the route into view
+    } catch (e) {
+      setRouteError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRouting(false);
+    }
+  }
 
   useEffect(() => {
     (async () => {
@@ -644,6 +717,7 @@ function Shops({ t, onBack }: { t: Extract<Turn, { role: "assistant" }>; onBack:
         if (live) {
           setData(j);
           setExpanded(0);
+          setRoute(null);
         }
       })
       .catch((e) => live && setError(e instanceof Error ? e.message : String(e)))
@@ -669,7 +743,7 @@ function Shops({ t, onBack }: { t: Extract<Turn, { role: "assistant" }>; onBack:
         </View>
       </View>
 
-      <ScrollView style={s.flex} contentContainerStyle={s.result} keyboardShouldPersistTaps="handled">
+      <ScrollView ref={scroll} style={s.flex} contentContainerStyle={s.result} keyboardShouldPersistTaps="handled">
         <View style={s.caseCard}>
           <Feather name={icon} size={24} color="#fff" />
           <Text style={s.caseText} numberOfLines={2}>
@@ -696,7 +770,7 @@ function Shops({ t, onBack }: { t: Extract<Turn, { role: "assistant" }>; onBack:
         </View>
 
         {/* Shown around the user while shops load, so the layout doesn't jump when they arrive. */}
-        {(data || loc) && <TileMap you={near ? undefined : (loc ?? undefined)} center={data?.center ?? loc!} shops={shops} />}
+        {(data || loc) && <TileMap you={near ? undefined : (loc ?? undefined)} center={data?.center ?? loc!} shops={shops} route={route?.line} />}
 
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.filters} contentContainerStyle={s.filterRow}>
           <Pressable onPress={() => setOpenNow((v) => !v)} style={[s.filter, openNow && s.filterOn]} accessibilityState={{ selected: openNow }}>
@@ -724,7 +798,16 @@ function Shops({ t, onBack }: { t: Extract<Turn, { role: "assistant" }>; onBack:
           const open = i === expanded;
           const dist = shop.km != null ? `${shop.km.toFixed(1)} KM` : "";
           return (
-            <Pressable key={shop.id} onPress={() => setExpanded(i)} disabled={open} style={s.shopCard}>
+            <Pressable
+              key={shop.id}
+              onPress={() => {
+                setExpanded(i);
+                setRoute(null);
+                setRouteError("");
+              }}
+              disabled={open}
+              style={s.shopCard}
+            >
               <View style={s.shopRow}>
                 <View style={[s.rank, open && s.rankOn]}>
                   <Text style={[s.rankText, !open && s.tagTextLight]}>{i + 1}</Text>
@@ -741,14 +824,42 @@ function Shops({ t, onBack }: { t: Extract<Turn, { role: "assistant" }>; onBack:
                     <Feather name="clock" size={15} color="rgba(0,0,0,0.5)" />
                     <Text style={s.shopHours}>{hours(shop)}</Text>
                   </View>
+                  {route?.shopId === shop.id ? (
+                    <>
+                      <View style={s.shopRow}>
+                        <Text style={s.routeTime}>{route.min} min</Text>
+                        <Text style={[s.shopDist, s.flex]}>{meters(route.m)}</Text>
+                        {(["car", "foot"] as const).map((mode) => (
+                          <Pressable
+                            key={mode}
+                            onPress={() => mode !== route.mode && go(shop, mode)}
+                            disabled={routing}
+                            style={[s.filter, s.modeChip, route.mode === mode && s.filterOn]}
+                            accessibilityState={{ selected: route.mode === mode }}
+                          >
+                            <Text style={[s.filterText, route.mode === mode && s.tagTextLight]}>{mode === "car" ? "Drive" : "Walk"}</Text>
+                          </Pressable>
+                        ))}
+                        <Pressable onPress={() => setRoute(null)} style={[s.circle, s.callBtn, s.modeChip]} accessibilityLabel="Close directions">
+                          <Feather name="x" size={16} color="#000" />
+                        </Pressable>
+                      </View>
+                      <View style={s.routeSteps}>
+                        {route.steps.map((st, k) => (
+                          <View key={k} style={s.shopRow}>
+                            <View style={s.turnIcon}>
+                              <Feather name={st.icon} size={15} color="#000" />
+                            </View>
+                            <Text style={s.shopHours}>{st.text}</Text>
+                            {st.m > 0 && <Text style={s.shopDist}>{meters(st.m)}</Text>}
+                          </View>
+                        ))}
+                      </View>
+                    </>
+                  ) : (
                   <View style={s.actions}>
-                    <Pressable
-                      // A plain Maps link: free, and opens the Google Maps app (or browser) with walking/driving routes.
-                      onPress={() => Linking.openURL(`https://www.google.com/maps/dir/?api=1&destination=${shop.lat},${shop.lng}`)}
-                      style={[s.guideBtn, s.shopBtn]}
-                      accessibilityRole="link"
-                    >
-                      <Text style={s.shopText}>Get directions</Text>
+                    <Pressable onPress={() => go(shop, "car")} disabled={routing} style={[s.guideBtn, s.shopBtn]}>
+                      <Text style={s.shopText}>{routing ? "Finding route…" : "Get directions"}</Text>
                     </Pressable>
                     <Pressable
                       onPress={() => shop.phone && Linking.openURL(`tel:${shop.phone.replace(/[^\d+]/g, "")}`)}
@@ -759,6 +870,8 @@ function Shops({ t, onBack }: { t: Extract<Turn, { role: "assistant" }>; onBack:
                       <Feather name="phone" size={20} color="#000" />
                     </Pressable>
                   </View>
+                  )}
+                  {!!routeError && <Text style={s.error}>{routeError}</Text>}
                 </>
               )}
             </Pressable>
@@ -1283,6 +1396,11 @@ const s = StyleSheet.create({
   youDot: { position: "absolute", width: 14, height: 14, borderRadius: 7, backgroundColor: "#000", borderWidth: 3, borderColor: "#fff" },
   attribution: { position: "absolute", right: 12, bottom: 8, paddingHorizontal: 6, borderRadius: 6, backgroundColor: "rgba(255,255,255,0.8)", fontFamily: "Poppins_400Regular", fontSize: 9, color: "rgba(0,0,0,0.6)" },
   callBtn: { borderWidth: 1, borderColor: "rgba(0,0,0,0.1)" },
+  routeLine: { position: "absolute", left: 0, top: 0 },
+  routeTime: { fontFamily: "Poppins_600SemiBold", fontSize: 18, color: "#000" },
+  modeChip: { height: 34, paddingHorizontal: 14 },
+  routeSteps: { gap: 12 },
+  turnIcon: { width: 30, height: 30, borderRadius: 15, backgroundColor: "#F2F2F2", alignItems: "center", justifyContent: "center" },
 
   stepCount: { height: 45, paddingHorizontal: 20, borderRadius: 100, backgroundColor: "#fff", alignItems: "center", justifyContent: "center" },
   stepCountText: { fontFamily: "Poppins_500Medium", fontSize: 15, color: "#000" },
