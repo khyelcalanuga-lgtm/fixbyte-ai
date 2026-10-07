@@ -1,4 +1,4 @@
-// Tried in order: Flash-Lite takes over when Flash is overloaded (503) or rate-limited (429).
+// Tried in order: Flash-Lite takes over when Flash is overloaded, times out (5xx) or is rate-limited (429).
 const MODELS = ["gemini-flash-latest", "gemini-flash-lite-latest"];
 
 const SYSTEM = `You are a friendly tech repair assistant. The user shows or describes damaged hardware or a software problem.
@@ -164,7 +164,12 @@ export async function POST(req: Request) {
           response_format: { type: "json_schema", json_schema: { name: "reply", schema: SCHEMA } },
           messages: [{ role: "system", content: SYSTEM }, ...messages],
         }),
-      });
+        signal: AbortSignal.timeout(20000), // an overloaded Flash can stall 30s+ before failing; move on sooner
+      }).catch(() => null);
+      if (!r) {
+        error = "Request timed out";
+        continue;
+      }
       const data = await r.json();
       if (r.ok) {
         const raw: string = data.choices[0].message.content;
@@ -189,7 +194,7 @@ export async function POST(req: Request) {
       }
       // Gemini wraps some errors in an array.
       error = (Array.isArray(data) ? data[0] : data).error?.message ?? r.statusText;
-      if (r.status !== 503 && r.status !== 429) break;
+      if (r.status < 500 && r.status !== 429) break; // 5xx covers 503 overload and 504 timeouts
     }
     throw new Error(error);
   } catch (e) {
