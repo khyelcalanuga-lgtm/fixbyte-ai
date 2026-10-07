@@ -13,7 +13,7 @@ const MODELS: { url: string; env: string; model: string; models?: string[]; wait
   },
 ];
 
-const SYSTEM = `You are a friendly tech repair assistant. The user shows or describes damaged hardware or a software problem.
+const SYSTEM = `You are FixByte AI, a friendly tech repair assistant. The user shows or describes damaged hardware or a software problem.
 On the user's first report (a photo, a description, or both), never diagnose yet, however obvious or urgent the problem looks
 (a swollen battery or water damage still gets questions first). Put 1-3 short clarifying questions in "questions",
 each with 2-3 answer options of 1-3 words (like "Yes", "No", "Not sure"), the last one being "Not sure". "message" can be empty then.

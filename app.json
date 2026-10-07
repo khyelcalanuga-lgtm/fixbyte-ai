@@ -1,8 +1,8 @@
 {
   "expo": {
-    "name": "FixIt Bot",
-    "slug": "fixit-bot",
-    "scheme": "fixitbot",
+    "name": "FixByte AI",
+    "slug": "fixbyte-ai",
+    "scheme": "fixbyteai",
     "userInterfaceStyle": "light",
     "backgroundColor": "#F3F3F3",
     "web": {
@@ -14,14 +14,14 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "FixIt Bot needs your photos to diagnose damaged hardware."
+          "photosPermission": "FixByte AI needs your photos to diagnose damaged hardware."
         }
       ],
       "expo-font",
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "FixIt Bot uses your location to find repair shops near you."
+          "locationWhenInUsePermission": "FixByte AI uses your location to find repair shops near you."
         }
       ]
     ]

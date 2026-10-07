@@ -8,7 +8,7 @@ type Body = { services: string[]; lat?: number; lng?: number; near?: string; ope
 // (A query per category with name regexes took 20-40s on the public servers.)
 const QUERY = (lat: number, lng: number) => {
   const around = `(around:${RADIUS_M},${lat},${lng})`;
-  return `[out:json][timeout:20];(
+  return `[out:json][timeout:40];(
     nwr["shop"~"^(mobile_phone|mobile_phone_repair|computer|computer_repair|electronics|electronics_repair|repair|appliance)$"]${around};
     nwr["craft"="electronics_repair"]${around};
   );out center tags;`;
@@ -30,9 +30,14 @@ const CATEGORIES: Record<string, (t: Record<string, string>) => boolean> = {
 };
 
 const RADIUS_M = 8000;
-// Public Overpass servers are busy at times; the second takes over when the first fails.
-const OVERPASS = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"];
-const UA = { "User-Agent": "FixItBot/1.0 (repair shop finder)" }; // OSM's usage policy asks apps to identify themselves
+// Public Overpass servers are often busy (504) or hang, and which ones changes by the hour, so all are asked at once.
+const OVERPASS = [
+  "https://overpass-api.de/api/interpreter",
+  "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+  "https://overpass.kumi.systems/api/interpreter",
+  "https://overpass.private.coffee/api/interpreter",
+];
+const UA = { "User-Agent": "FixByteAI/1.0 (repair shop finder)" }; // OSM's usage policy asks apps to identify themselves
 
 type Element = { id: number; type: string; lat?: number; lon?: number; center?: { lat: number; lon: number }; tags?: Record<string, string> };
 
@@ -51,23 +56,41 @@ async function geocode(place: string) {
   return { lat: Number(hit.lat), lng: Number(hit.lon) };
 }
 
+// Searches take 12-30s on the public servers, and the filter chips re-ask the same query, so results are kept per
+// spot (rounded to ~100 m). The promise is cached so a chip tapped mid-search waits on that search instead of starting another.
+// ponytail: kept for the server's lifetime with no expiry; add a TTL if it ever runs long enough for shops to go stale.
+const cache = new Map<string, Promise<Element[]>>();
+function shopsNear(lat: number, lng: number) {
+  const query = QUERY(Number(lat.toFixed(3)), Number(lng.toFixed(3)));
+  if (!cache.has(query)) cache.set(query, overpass(query).catch((e) => (cache.delete(query), Promise.reject(e))));
+  return cache.get(query)!;
+}
+
+// The first server to answer wins; the rest are cancelled so they aren't left doing work for nothing.
 async function overpass(query: string): Promise<Element[]> {
-  let error = "";
-  for (const url of OVERPASS) {
-    try {
-      const r = await fetch(url, {
-        method: "POST",
-        headers: UA,
-        body: new URLSearchParams({ data: query }),
-        signal: AbortSignal.timeout(20000), // a stuck server moves on to the next one
-      });
-      if (r.ok) return (await r.json()).elements;
-      error = `Shop search is busy (${r.status}). Try again in a moment.`;
-    } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
-    }
+  const done = new AbortController();
+  const signal = AbortSignal.any([done.signal, AbortSignal.timeout(45000)]);
+  try {
+    return await Promise.any(
+      OVERPASS.map(async (url) => {
+        // A busy server (504) says so within seconds and often answers on the next try, so keep asking until
+        // one server answers or time runs out (the aborted signal then ends the loop).
+        for (;;) {
+          const r = await fetch(url, { method: "POST", headers: UA, body: new URLSearchParams({ data: query }), signal }).catch((e) => {
+            if (signal.aborted) throw e;
+            return null; // a failed connection gets another try too
+          });
+          if (r?.ok) return (await r.json()).elements as Element[];
+          if (r && r.status !== 504) throw new Error(String(r.status)); // e.g. 429: we're rate-limited, don't hammer
+          await new Promise((ok) => setTimeout(ok, 2000));
+        }
+      }),
+    );
+  } catch {
+    throw new Error("Shop search is busy right now. Try again in a moment.");
+  } finally {
+    done.abort();
   }
-  throw new Error(error);
 }
 
 export async function POST(req: Request) {
@@ -78,7 +101,7 @@ export async function POST(req: Request) {
 
     const chosen = services.filter((sv) => CATEGORIES[sv]);
     const tests = (chosen.length ? chosen : Object.keys(CATEGORIES)).map((sv) => CATEGORIES[sv]);
-    const elements = await overpass(QUERY(center.lat, center.lng));
+    const elements = await shopsNear(center.lat, center.lng);
 
     const shops = elements
       .filter((e) => tests.some((test) => test(e.tags ?? {})))
