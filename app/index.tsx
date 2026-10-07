@@ -587,7 +587,7 @@ function world({ lat, lng }: Point, zoom: number) {
 
 // Free map: Esri's light gray tiles laid out by hand, with numbered shop pins (CARTO's free tiles now need a key).
 // No native map package or API key; the attribution is required by the tiles' terms.
-function TileMap({ you, center, shops, route }: { you?: Point; center: Point; shops: Shop[]; route?: Point[] }) {
+function TileMap({ you, center, shops, route, onDrag }: { you?: Point; center: Point; shops: Shop[]; route?: Point[]; onDrag: (on: boolean) => void }) {
   const [w, setW] = useState(0);
   // Where the user has dragged/zoomed to (center in world pixels); null = fit the pins or route.
   const [view, setView] = useState<{ zoom: number; x: number; y: number } | null>(null);
@@ -622,7 +622,12 @@ function TileMap({ you, center, shops, route }: { you?: Point; center: Point; sh
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
       onPanResponderTerminationRequest: () => false, // keep the page from scrolling mid-drag
-      onPanResponderGrant: () => (start.current = cur.current),
+      onPanResponderGrant: () => {
+        start.current = cur.current;
+        onDrag(true); // the page stops scrolling while the map is dragged
+      },
+      onPanResponderRelease: () => onDrag(false),
+      onPanResponderTerminate: () => onDrag(false),
       onPanResponderMove: (_, g) => setView({ zoom: start.current.zoom, x: start.current.x - g.dx, y: start.current.y - g.dy }),
     }),
   ).current;
@@ -643,7 +648,13 @@ function TileMap({ you, center, shops, route }: { you?: Point; center: Point; sh
   const line = route?.map((p) => at(p, 0)).map((q) => `${q.left},${q.top}`).join(" ");
 
   return (
-    <View style={s.map} onLayout={(e) => setW(e.nativeEvent.layout.width)} accessibilityLabel="Map of nearby repair shops" {...pan.panHandlers}>
+    <View
+      // Web-only style (missing from RN's types): touch drags on the map pan it instead of scrolling the page.
+      style={[s.map, Platform.OS === "web" && ({ touchAction: "none" } as {})]}
+      onLayout={(e) => setW(e.nativeEvent.layout.width)}
+      accessibilityLabel="Map of nearby repair shops"
+      {...pan.panHandlers}
+    >
       {tiles.map(({ x, y }) => (
         <Image
           key={`${zoom}/${x}/${y}`}
@@ -700,6 +711,7 @@ function Shops({ t, onBack }: { t: Extract<Turn, { role: "assistant" }>; onBack:
   const [route, setRoute] = useState<Route | null>(null);
   const [routing, setRouting] = useState(false);
   const [routeError, setRouteError] = useState("");
+  const [dragging, setDragging] = useState(false);
   const scroll = useRef<ScrollView>(null);
 
   async function go(shop: Shop, mode: Mode) {
@@ -782,7 +794,7 @@ function Shops({ t, onBack }: { t: Extract<Turn, { role: "assistant" }>; onBack:
         </View>
       </View>
 
-      <ScrollView ref={scroll} style={s.flex} contentContainerStyle={s.result} keyboardShouldPersistTaps="handled">
+      <ScrollView ref={scroll} style={s.flex} contentContainerStyle={s.result} keyboardShouldPersistTaps="handled" scrollEnabled={!dragging}>
         <View style={s.caseCard}>
           <Feather name={icon} size={24} color="#fff" />
           <Text style={s.caseText} numberOfLines={2}>
@@ -809,7 +821,7 @@ function Shops({ t, onBack }: { t: Extract<Turn, { role: "assistant" }>; onBack:
         </View>
 
         {/* Shown around the user while shops load, so the layout doesn't jump when they arrive. */}
-        {(data || loc) && <TileMap you={near ? undefined : (loc ?? undefined)} center={data?.center ?? loc!} shops={shops} route={route?.line} />}
+        {(data || loc) && <TileMap you={near ? undefined : (loc ?? undefined)} center={data?.center ?? loc!} shops={shops} route={route?.line} onDrag={setDragging} />}
 
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.filters} contentContainerStyle={s.filterRow}>
           <Pressable onPress={() => setOpenNow((v) => !v)} style={[s.filter, openNow && s.filterOn]} accessibilityState={{ selected: openNow }}>
