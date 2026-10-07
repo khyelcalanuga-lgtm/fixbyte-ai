@@ -6,6 +6,7 @@ import {
   Image,
   KeyboardAvoidingView,
   Linking,
+  PanResponder,
   Platform,
   Pressable,
   ScrollView,
@@ -575,6 +576,7 @@ async function directions(from: Point, shop: Shop, mode: Mode): Promise<Route> {
 const meters = (m: number) => (m < 1000 ? `${Math.round(m / 10) * 10} M` : `${(m / 1000).toFixed(1)} KM`);
 
 const TILE = 256; // map tile size in points
+const MAX_ZOOM = 16; // closest zoom Esri's light gray tiles have
 
 // Web Mercator position in world pixels at a zoom level (how map tiles are laid out).
 function world({ lat, lng }: Point, zoom: number) {
@@ -587,23 +589,47 @@ function world({ lat, lng }: Point, zoom: number) {
 // No native map package or API key; the attribution is required by the tiles' terms.
 function TileMap({ you, center, shops, route }: { you?: Point; center: Point; shops: Shop[]; route?: Point[] }) {
   const [w, setW] = useState(0);
+  // Where the user has dragged/zoomed to (center in world pixels); null = fit the pins or route.
+  const [view, setView] = useState<{ zoom: number; x: number; y: number } | null>(null);
   const h = 231;
   const points = route ? [...route] : [...shops, ...(you ? [you] : [])]; // with a route, zoom to fit just the route
   if (!points.length) points.push(center);
 
   // Closest zoom (up to street level) that still fits every pin with some padding.
-  let zoom = 16;
-  for (; zoom > 3; zoom--) {
-    const ps = points.map((p) => world(p, zoom));
+  let fit = MAX_ZOOM;
+  for (; fit > 3; fit--) {
+    const ps = points.map((p) => world(p, fit));
     const xs = ps.map((p) => p.x);
     const ys = ps.map((p) => p.y);
     if (Math.max(...xs) - Math.min(...xs) <= w - 60 && Math.max(...ys) - Math.min(...ys) <= h - 60) break;
   }
-  const ps = points.map((p) => world(p, zoom));
-  const midX = (Math.min(...ps.map((p) => p.x)) + Math.max(...ps.map((p) => p.x))) / 2;
-  const midY = (Math.min(...ps.map((p) => p.y)) + Math.max(...ps.map((p) => p.y))) / 2;
-  const left = midX - w / 2;
-  const top = midY - h / 2;
+  const ps = points.map((p) => world(p, fit));
+  const zoom = view?.zoom ?? fit;
+  const cx = view?.x ?? (Math.min(...ps.map((p) => p.x)) + Math.max(...ps.map((p) => p.x))) / 2;
+  const cy = view?.y ?? (Math.min(...ps.map((p) => p.y)) + Math.max(...ps.map((p) => p.y))) / 2;
+  const left = cx - w / 2;
+  const top = cy - h / 2;
+
+  // New pins or a new route re-fit the map.
+  const fitKey = `${shops.map((sh) => sh.id).join()}|${route?.length}`;
+  useEffect(() => setView(null), [fitKey]);
+
+  // Drag to pan. The responder is created once, so it reads the current view through a ref.
+  const cur = useRef({ zoom, x: cx, y: cy });
+  cur.current = { zoom, x: cx, y: cy };
+  const start = useRef(cur.current);
+  const pan = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onPanResponderTerminationRequest: () => false, // keep the page from scrolling mid-drag
+      onPanResponderGrant: () => (start.current = cur.current),
+      onPanResponderMove: (_, g) => setView({ zoom: start.current.zoom, x: start.current.x - g.dx, y: start.current.y - g.dy }),
+    }),
+  ).current;
+  const zoomBy = (d: number) => {
+    const z = Math.min(MAX_ZOOM, Math.max(3, zoom + d));
+    setView({ zoom: z, x: cx * 2 ** (z - zoom), y: cy * 2 ** (z - zoom) }); // keep the same spot in the middle
+  };
 
   const tiles: { x: number; y: number }[] = [];
   if (w) {
@@ -617,7 +643,7 @@ function TileMap({ you, center, shops, route }: { you?: Point; center: Point; sh
   const line = route?.map((p) => at(p, 0)).map((q) => `${q.left},${q.top}`).join(" ");
 
   return (
-    <View style={s.map} onLayout={(e) => setW(e.nativeEvent.layout.width)} accessibilityLabel="Map of nearby repair shops">
+    <View style={s.map} onLayout={(e) => setW(e.nativeEvent.layout.width)} accessibilityLabel="Map of nearby repair shops" {...pan.panHandlers}>
       {tiles.map(({ x, y }) => (
         <Image
           key={`${zoom}/${x}/${y}`}
@@ -639,6 +665,19 @@ function TileMap({ you, center, shops, route }: { you?: Point; center: Point; sh
             <Text style={s.pinText}>{i + 1}</Text>
           </View>
         ))}
+      <View style={s.mapControls}>
+        <Pressable onPress={() => zoomBy(1)} disabled={zoom >= MAX_ZOOM} style={s.mapBtn} accessibilityLabel="Zoom in">
+          <Feather name="plus" size={16} color="#000" />
+        </Pressable>
+        <Pressable onPress={() => zoomBy(-1)} disabled={zoom <= 3} style={s.mapBtn} accessibilityLabel="Zoom out">
+          <Feather name="minus" size={16} color="#000" />
+        </Pressable>
+        {view && (
+          <Pressable onPress={() => setView(null)} style={s.mapBtn} accessibilityLabel="Re-center map">
+            <Feather name="crosshair" size={16} color="#000" />
+          </Pressable>
+        )}
+      </View>
       <Text style={s.attribution}>Powered by Esri · © OpenStreetMap</Text>
     </View>
   );
@@ -1397,6 +1436,8 @@ const s = StyleSheet.create({
   attribution: { position: "absolute", right: 12, bottom: 8, paddingHorizontal: 6, borderRadius: 6, backgroundColor: "rgba(255,255,255,0.8)", fontFamily: "Poppins_400Regular", fontSize: 9, color: "rgba(0,0,0,0.6)" },
   callBtn: { borderWidth: 1, borderColor: "rgba(0,0,0,0.1)" },
   routeLine: { position: "absolute", left: 0, top: 0 },
+  mapControls: { position: "absolute", right: 10, top: 10, gap: 6 },
+  mapBtn: { width: 34, height: 34, borderRadius: 17, backgroundColor: "#fff", alignItems: "center", justifyContent: "center" },
   routeTime: { fontFamily: "Poppins_600SemiBold", fontSize: 18, color: "#000" },
   modeChip: { height: 34, paddingHorizontal: 14 },
   routeSteps: { gap: 12 },
