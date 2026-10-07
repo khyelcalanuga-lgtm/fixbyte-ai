@@ -536,7 +536,7 @@ function world({ lat, lng }: Point, zoom: number) {
   return { x: ((lng + 180) / 360) * size, y: (0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI)) * size };
 }
 
-// Free map: CARTO "Voyager" tiles (OpenStreetMap data) laid out by hand, with numbered shop pins.
+// Free map: OpenStreetMap tiles laid out by hand, with numbered shop pins (CARTO's free tiles now need a key).
 // No native map package or API key; the attribution is required by the tiles' terms.
 function TileMap({ you, center, shops }: { you?: Point; center: Point; shops: Shop[] }) {
   const [w, setW] = useState(0);
@@ -573,7 +573,8 @@ function TileMap({ you, center, shops }: { you?: Point; center: Point; shops: Sh
       {tiles.map(({ x, y }) => (
         <Image
           key={`${zoom}/${x}/${y}`}
-          source={{ uri: `https://${"abcd"[(x + y) % 4]}.basemaps.cartocdn.com/rastertiles/voyager/${zoom}/${x}/${y}@2x.png` }}
+          // OSM's tile policy asks apps to identify themselves (browsers send a Referer instead).
+          source={{ uri: `https://tile.openstreetmap.org/${zoom}/${x}/${y}.png`, headers: { "User-Agent": "FixItBot/1.0 (repair shop finder)" } }}
           style={[s.tile, { left: x * TILE - left, top: y * TILE - top }]}
         />
       ))}
@@ -584,7 +585,7 @@ function TileMap({ you, center, shops }: { you?: Point; center: Point; shops: Sh
             <Text style={s.pinText}>{i + 1}</Text>
           </View>
         ))}
-      <Text style={s.attribution}>© OpenStreetMap · © CARTO</Text>
+      <Text style={s.attribution}>© OpenStreetMap contributors</Text>
     </View>
   );
 }
