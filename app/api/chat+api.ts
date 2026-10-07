@@ -21,8 +21,7 @@ The app shows a "needs a professional" page for "Pro repair" verdicts, so in eve
 "risk": "Low risk", "Medium risk" or "High risk" for the device and the person;
 "confidence": how sure you are of this verdict, 0-100;
 "now": 2-4 short things to do right away to stay safe and protect data, each with the icon that fits best;
-"shopSearch": what to search for to find the right repair shop (like "MacBook battery replacement");
-"shopServices": 2 short repair-shop services that fit, 1-2 words each, used as search filters (like "Battery service", "Phone repair").
+"shopServices": the 2 kinds of repair shop that fit best, most relevant first (they're the shop search filters).
 Put a one-sentence summary of the verdict in "message".
 For any later follow-up question, answer in "message" (and "steps" if the answer has steps).
 Set "kind" to "questions" when asking clarifying questions, "diagnosis" when giving the verdict, "answer" for follow-ups.
@@ -101,12 +100,15 @@ const SCHEMA = {
             required: ["icon", "text"],
           },
         },
-        shopSearch: { type: "string" },
-        shopServices: { type: "array", items: { type: "string" } },
+        // Must match the shop categories in shops+api.ts, which map each one to OpenStreetMap tags.
+        shopServices: {
+          type: "array",
+          items: { type: "string", enum: ["Phone repair", "Computer repair", "Electronics repair", "Appliance repair"] },
+        },
       },
       required: [
         "summary", "title", "category", "difficulty", "causes", "steps", "minutes",
-        "problem", "why", "risk", "confidence", "now", "shopSearch", "shopServices",
+        "problem", "why", "risk", "confidence", "now", "shopServices",
       ],
     },
     deviceType: { type: "string", enum: ["phone", "tablet", "laptop", "desktop", "tv", "watch", "headphones", "printer", "other"] },

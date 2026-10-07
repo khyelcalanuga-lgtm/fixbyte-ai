@@ -19,7 +19,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import * as ImagePicker from "expo-image-picker";
-import { Feather, FontAwesome } from "@expo/vector-icons";
+import { Feather } from "@expo/vector-icons";
 import * as Location from "expo-location";
 import Svg, { Circle, type CircleProps } from "react-native-svg";
 import { useFonts } from "expo-font";
@@ -43,7 +43,6 @@ type Diagnosis = {
   risk: string;
   confidence: number;
   now: { icon: string; text: string }[];
-  shopSearch: string;
   shopServices: string[]; // filter chips on the Repair Shops page
 };
 type FeatherName = keyof typeof Feather.glyphMap;
@@ -322,7 +321,8 @@ export default function App() {
                 </View>
               </View>
               <View style={s.home}>
-                <Text style={s.greeting}>Hey, Kiel, What needs fixing today?</Text>
+                <Text style={s.greeting}>Hey, Kiel,</Text>
+                <Text style={s.greetingSub}>What needs fixing today?</Text>
                 <View style={s.cards}>
                   <Card icon="camera" title="Scan a photo" subtitle="AI spots the damage" onPress={scan} />
                   <Card icon="message-square" title="Describe it" subtitle="Type the symptoms" onPress={() => input.current?.focus()} />
@@ -504,14 +504,15 @@ const MONO = Platform.select({ ios: "Menlo", default: "monospace" });
 type Shop = {
   id: string;
   name: string;
-  km?: number;
-  rating?: number;
-  reviews?: number;
-  openNow?: boolean;
-  closes?: string; // ISO times from Google Places
+  lat: number;
+  lng: number;
+  km: number;
+  openNow?: boolean; // undefined when OpenStreetMap has no (readable) opening hours
+  closes?: string; // ISO times worked out from the shop's opening hours
   opens?: string;
   phone?: string;
 };
+type Point = { lat: number; lng: number };
 
 // "8 PM", "8:30 PM", or "Tue 9 AM" when it isn't today.
 function clock(iso: string) {
@@ -521,22 +522,84 @@ function clock(iso: string) {
 }
 
 function hours(shop: Shop) {
-  if (shop.openNow === undefined) return "";
+  if (shop.openNow === undefined) return "Hours not listed";
   if (shop.openNow) return shop.closes ? `Open until ${clock(shop.closes)}` : "Open now";
   return shop.opens ? `Opens ${clock(shop.opens)}` : "Closed";
+}
+
+const TILE = 256; // map tile size in points
+
+// Web Mercator position in world pixels at a zoom level (how map tiles are laid out).
+function world({ lat, lng }: Point, zoom: number) {
+  const size = TILE * 2 ** zoom;
+  const sin = Math.sin((lat * Math.PI) / 180);
+  return { x: ((lng + 180) / 360) * size, y: (0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI)) * size };
+}
+
+// Free map: CARTO "Voyager" tiles (OpenStreetMap data) laid out by hand, with numbered shop pins.
+// No native map package or API key; the attribution is required by the tiles' terms.
+function TileMap({ you, center, shops }: { you?: Point; center: Point; shops: Shop[] }) {
+  const [w, setW] = useState(0);
+  const h = 231;
+  const points = [...shops, ...(you ? [you] : [])];
+  if (!points.length) points.push(center);
+
+  // Closest zoom (up to street level) that still fits every pin with some padding.
+  let zoom = 16;
+  for (; zoom > 3; zoom--) {
+    const ps = points.map((p) => world(p, zoom));
+    const xs = ps.map((p) => p.x);
+    const ys = ps.map((p) => p.y);
+    if (Math.max(...xs) - Math.min(...xs) <= w - 60 && Math.max(...ys) - Math.min(...ys) <= h - 60) break;
+  }
+  const ps = points.map((p) => world(p, zoom));
+  const midX = (Math.min(...ps.map((p) => p.x)) + Math.max(...ps.map((p) => p.x))) / 2;
+  const midY = (Math.min(...ps.map((p) => p.y)) + Math.max(...ps.map((p) => p.y))) / 2;
+  const left = midX - w / 2;
+  const top = midY - h / 2;
+
+  const tiles: { x: number; y: number }[] = [];
+  if (w) {
+    for (let x = Math.floor(left / TILE); x <= Math.floor((left + w) / TILE); x++)
+      for (let y = Math.floor(top / TILE); y <= Math.floor((top + h) / TILE); y++) tiles.push({ x, y });
+  }
+  const at = (p: Point, size: number) => {
+    const q = world(p, zoom);
+    return { left: q.x - left - size / 2, top: q.y - top - size / 2 };
+  };
+
+  return (
+    <View style={s.map} onLayout={(e) => setW(e.nativeEvent.layout.width)} accessibilityLabel="Map of nearby repair shops">
+      {tiles.map(({ x, y }) => (
+        <Image
+          key={`${zoom}/${x}/${y}`}
+          source={{ uri: `https://${"abcd"[(x + y) % 4]}.basemaps.cartocdn.com/rastertiles/voyager/${zoom}/${x}/${y}@2x.png` }}
+          style={[s.tile, { left: x * TILE - left, top: y * TILE - top }]}
+        />
+      ))}
+      {w > 0 && you && <View style={[s.youDot, at(you, 14)]} />}
+      {w > 0 &&
+        shops.map((shop, i) => (
+          <View key={shop.id} style={[s.pin, at(shop, 26)]}>
+            <Text style={s.pinText}>{i + 1}</Text>
+          </View>
+        ))}
+      <Text style={s.attribution}>© OpenStreetMap · © CARTO</Text>
+    </View>
+  );
 }
 
 const NEEDS = { "Pro repair": "Needs a pro", "Some skill": "Some skill", "Beginner-safe": "Beginner-safe" } as const;
 
 function Shops({ t, onBack }: { t: Extract<Turn, { role: "assistant" }>; onBack: () => void }) {
   const d = t.diagnosis!;
-  const [loc, setLoc] = useState<{ lat: number; lng: number } | null>(null);
+  const [loc, setLoc] = useState<Point | null>(null);
   const [area, setArea] = useState<{ city?: string; region?: string }>({});
   const [nearText, setNearText] = useState(""); // what's typed in the location field
   const [near, setNear] = useState(""); // submitted: search there instead of around the user
   const [openNow, setOpenNow] = useState(true);
   const [service, setService] = useState<string | null>(null);
-  const [data, setData] = useState<{ shops: Shop[]; map?: string } | null>(null);
+  const [data, setData] = useState<{ shops: Shop[]; center: Point } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [expanded, setExpanded] = useState(0);
@@ -567,7 +630,13 @@ function Shops({ t, onBack }: { t: Extract<Turn, { role: "assistant" }>; onBack:
     fetch("/api/shops", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query: service ?? d.shopSearch, lat: loc?.lat, lng: loc?.lng, near: near || undefined, openNow }),
+      body: JSON.stringify({
+        services: service ? [service] : (d.shopServices ?? []),
+        lat: loc?.lat,
+        lng: loc?.lng,
+        near: near || undefined,
+        openNow,
+      }),
     })
       .then(async (r) => {
         const j = await r.json();
@@ -582,7 +651,7 @@ function Shops({ t, onBack }: { t: Extract<Turn, { role: "assistant" }>; onBack:
     return () => {
       live = false;
     };
-  }, [loc, near, openNow, service, d.shopSearch]);
+  }, [loc, near, openNow, service, d.shopServices]);
 
   const shops = data?.shops ?? [];
   const where = near || area.region;
@@ -626,7 +695,7 @@ function Shops({ t, onBack }: { t: Extract<Turn, { role: "assistant" }>; onBack:
           />
         </View>
 
-        {data?.map && <Image source={{ uri: data.map }} style={s.map} accessibilityLabel="Map of nearby repair shops" />}
+        {data && <TileMap you={near ? undefined : (loc ?? undefined)} center={data.center} shops={shops} />}
 
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.filters} contentContainerStyle={s.filterRow}>
           <Pressable onPress={() => setOpenNow((v) => !v)} style={[s.filter, openNow && s.filterOn]} accessibilityState={{ selected: openNow }}>
@@ -666,24 +735,15 @@ function Shops({ t, onBack }: { t: Extract<Turn, { role: "assistant" }>; onBack:
               </View>
               {open && (
                 <>
+                  {/* OpenStreetMap has no ratings, so this row is just the hours. */}
                   <View style={s.shopRow}>
-                    {shop.rating != null && (
-                      <>
-                        <FontAwesome name="star" size={17} color="#000" />
-                        <Text style={s.shopRating}>
-                          {shop.rating.toFixed(1)} ({(shop.reviews ?? 0).toLocaleString()})
-                        </Text>
-                      </>
-                    )}
+                    <Feather name="clock" size={15} color="rgba(0,0,0,0.5)" />
                     <Text style={s.shopHours}>{hours(shop)}</Text>
                   </View>
                   <View style={s.actions}>
                     <Pressable
-                      onPress={() =>
-                        Linking.openURL(
-                          `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(shop.name)}&destination_place_id=${shop.id}`,
-                        )
-                      }
+                      // A plain Maps link: free, and opens the Google Maps app (or browser) with walking/driving routes.
+                      onPress={() => Linking.openURL(`https://www.google.com/maps/dir/?api=1&destination=${shop.lat},${shop.lng}`)}
                       style={[s.guideBtn, s.shopBtn]}
                       accessibilityRole="link"
                     >
@@ -1079,7 +1139,8 @@ const s = StyleSheet.create({
   time: { fontFamily: "Poppins_400Regular", fontSize: 11, lineHeight: 16, textAlign: "center", color: "#000", marginTop: 4 },
 
   home: { flex: 1, justifyContent: "center", paddingHorizontal: 20 },
-  greeting: { fontFamily: "Poppins_500Medium", fontSize: 32, lineHeight: 48, textAlign: "center", color: "#000", marginBottom: 20 },
+  greeting: { fontFamily: "Poppins_500Medium", fontSize: 32, lineHeight: 44, textAlign: "center", color: "#000" },
+  greetingSub: { fontFamily: "Poppins_500Medium", fontSize: 20, lineHeight: 28, textAlign: "center", color: "#000", marginBottom: 20 },
   cards: { flexDirection: "row", gap: 10 },
   card: { flex: 1, minHeight: 138, backgroundColor: "#fff", borderRadius: 25, padding: 20 },
   cardIcon: { width: 37, height: 37, borderRadius: 10, backgroundColor: "#000", alignItems: "center", justifyContent: "center", marginBottom: 18 },
@@ -1214,8 +1275,12 @@ const s = StyleSheet.create({
   rankText: { fontFamily: "Poppins_500Medium", fontSize: 12, color: "#000" },
   shopName: { flex: 1, fontFamily: "Poppins_500Medium", fontSize: 14, lineHeight: 20, color: "#000" },
   shopDist: { fontFamily: MONO, fontSize: 11, color: "rgba(0,0,0,0.5)" },
-  shopRating: { fontFamily: MONO, fontSize: 11, color: "rgba(0,0,0,0.5)" },
-  shopHours: { flex: 1, textAlign: "right", fontFamily: "Poppins_400Regular", fontSize: 13, color: "#000" },
+  shopHours: { flex: 1, fontFamily: "Poppins_400Regular", fontSize: 13, color: "#000" },
+  tile: { position: "absolute", width: TILE, height: TILE },
+  pin: { position: "absolute", width: 26, height: 26, borderRadius: 13, backgroundColor: GREEN, borderWidth: 2, borderColor: "#fff", alignItems: "center", justifyContent: "center" },
+  pinText: { fontFamily: "Poppins_600SemiBold", fontSize: 11, color: "#000" },
+  youDot: { position: "absolute", width: 14, height: 14, borderRadius: 7, backgroundColor: "#000", borderWidth: 3, borderColor: "#fff" },
+  attribution: { position: "absolute", right: 12, bottom: 8, paddingHorizontal: 6, borderRadius: 6, backgroundColor: "rgba(255,255,255,0.8)", fontFamily: "Poppins_400Regular", fontSize: 9, color: "rgba(0,0,0,0.6)" },
   callBtn: { borderWidth: 1, borderColor: "rgba(0,0,0,0.1)" },
 
   stepCount: { height: 45, paddingHorizontal: 20, borderRadius: 100, backgroundColor: "#fff", alignItems: "center", justifyContent: "center" },
