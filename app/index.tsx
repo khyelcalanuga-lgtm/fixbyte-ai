@@ -536,7 +536,7 @@ function world({ lat, lng }: Point, zoom: number) {
   return { x: ((lng + 180) / 360) * size, y: (0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI)) * size };
 }
 
-// Free map: OpenStreetMap tiles laid out by hand, with numbered shop pins (CARTO's free tiles now need a key).
+// Free map: Esri's light gray tiles laid out by hand, with numbered shop pins (CARTO's free tiles now need a key).
 // No native map package or API key; the attribution is required by the tiles' terms.
 function TileMap({ you, center, shops }: { you?: Point; center: Point; shops: Shop[] }) {
   const [w, setW] = useState(0);
@@ -573,8 +573,7 @@ function TileMap({ you, center, shops }: { you?: Point; center: Point; shops: Sh
       {tiles.map(({ x, y }) => (
         <Image
           key={`${zoom}/${x}/${y}`}
-          // OSM's tile policy asks apps to identify themselves (browsers send a Referer instead).
-          source={{ uri: `https://tile.openstreetmap.org/${zoom}/${x}/${y}.png`, headers: { "User-Agent": "FixItBot/1.0 (repair shop finder)" } }}
+          source={{ uri: `https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/${zoom}/${y}/${x}` }}
           style={[s.tile, { left: x * TILE - left, top: y * TILE - top }]}
         />
       ))}
@@ -585,7 +584,7 @@ function TileMap({ you, center, shops }: { you?: Point; center: Point; shops: Sh
             <Text style={s.pinText}>{i + 1}</Text>
           </View>
         ))}
-      <Text style={s.attribution}>© OpenStreetMap contributors</Text>
+      <Text style={s.attribution}>Powered by Esri · © OpenStreetMap</Text>
     </View>
   );
 }
@@ -696,7 +695,8 @@ function Shops({ t, onBack }: { t: Extract<Turn, { role: "assistant" }>; onBack:
           />
         </View>
 
-        {data && <TileMap you={near ? undefined : (loc ?? undefined)} center={data.center} shops={shops} />}
+        {/* Shown around the user while shops load, so the layout doesn't jump when they arrive. */}
+        {(data || loc) && <TileMap you={near ? undefined : (loc ?? undefined)} center={data?.center ?? loc!} shops={shops} />}
 
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.filters} contentContainerStyle={s.filterRow}>
           <Pressable onPress={() => setOpenNow((v) => !v)} style={[s.filter, openNow && s.filterOn]} accessibilityState={{ selected: openNow }}>
@@ -1262,7 +1262,7 @@ const s = StyleSheet.create({
   casePillText: { fontFamily: "Poppins_400Regular", fontSize: 11, color: "#000" },
   nearBox: { flexDirection: "row", alignItems: "center", gap: 15, height: 44, paddingHorizontal: 20, marginTop: 10, borderRadius: 100, backgroundColor: "#fff", borderWidth: 1, borderColor: "rgba(0,0,0,0.07)" },
   nearInput: { flex: 1, height: "100%", fontFamily: "Poppins_400Regular", fontSize: 15, color: "#000" },
-  map: { width: "100%", height: 231, borderRadius: 25, marginTop: 10, backgroundColor: "#E8E8E8" },
+  map: { width: "100%", height: 231, borderRadius: 25, marginTop: 10, backgroundColor: "#E8E8E8", overflow: "hidden" },
   filters: { marginTop: 10, marginHorizontal: -20 },
   filterRow: { gap: 10, paddingHorizontal: 20 },
   filter: { height: 40, paddingHorizontal: 20, borderRadius: 100, backgroundColor: "#fff", justifyContent: "center" },

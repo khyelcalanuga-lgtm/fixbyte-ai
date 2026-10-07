@@ -154,49 +154,53 @@ export async function POST(req: Request) {
   try {
     const messages = await req.json();
     let error = "";
-    for (const model of MODELS) {
-      const r = await fetch("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${process.env.GEMINI_API_KEY}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model,
-          reasoning_effort: "low", // default thinking took ~70s per reply; low answers in ~10s
-          response_format: { type: "json_schema", json_schema: { name: "reply", schema: SCHEMA } },
-          messages: [{ role: "system", content: SYSTEM }, ...messages],
-        }),
-        signal: AbortSignal.timeout(20000), // an overloaded Flash can stall 30s+ before failing; move on sooner
-      }).catch(() => null);
-      if (!r) {
-        error = "Request timed out";
-        continue;
-      }
-      const data = await r.json();
-      if (r.ok) {
-        const raw: string = data.choices[0].message.content;
-        try {
-          const out = JSON.parse(raw);
-          const { device, deviceType, finding, software } = out;
-          const questions = out.questions ?? [];
-          // Questions take precedence: a reply that asks something isn't a diagnosis yet.
-          const diagnosis: Diagnosis | undefined = out.kind === "diagnosis" && !questions.length ? out.diagnosis : undefined;
-          if (diagnosis) {
-            return Response.json({ text: diagnosisText(diagnosis), questions, device, deviceType, finding, software, diagnosis });
-          }
-          // Steps come back as a list because JSON mode ignores "put each step on its own line".
-          const steps = numbered(out.steps ?? []);
-          // Written here, not by the model: it kept saying "Two" whatever the actual count.
-          const n = questions.length;
-          const message = n ? `Got it. ${COUNTS[n] ?? `${n} quick checks`} so I can narrow it down:` : out.message;
-          return Response.json({ text: [message, ...steps].join("\n\n"), questions, device, deviceType, finding, software });
-        } catch {
-          return Response.json({ text: raw, questions: [] }); // model ignored the schema; show it as plain text
+    // Several keys can go in GEMINI_API_KEY, comma-separated: one that's out of quota (429) or rejected hands over to the next.
+    const keys = (process.env.GEMINI_API_KEY ?? "").split(",").map((k: string) => k.trim()).filter(Boolean);
+    models: for (const model of MODELS) {
+      for (const key of keys) {
+        const r = await fetch("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model,
+            reasoning_effort: "low", // default thinking took ~70s per reply; low answers in ~10s
+            response_format: { type: "json_schema", json_schema: { name: "reply", schema: SCHEMA } },
+            messages: [{ role: "system", content: SYSTEM }, ...messages],
+          }),
+          signal: AbortSignal.timeout(20000), // an overloaded Flash can stall 30s+ before failing; move on sooner
+        }).catch(() => null);
+        if (!r) {
+          error = "Request timed out";
+          continue models; // a stalled model stalls on every key
         }
+        const data = await r.json();
+        if (r.ok) {
+          const raw: string = data.choices[0].message.content;
+          try {
+            const out = JSON.parse(raw);
+            const { device, deviceType, finding, software } = out;
+            const questions = out.questions ?? [];
+            // Questions take precedence: a reply that asks something isn't a diagnosis yet.
+            const diagnosis: Diagnosis | undefined = out.kind === "diagnosis" && !questions.length ? out.diagnosis : undefined;
+            if (diagnosis) {
+              return Response.json({ text: diagnosisText(diagnosis), questions, device, deviceType, finding, software, diagnosis });
+            }
+            // Steps come back as a list because JSON mode ignores "put each step on its own line".
+            const steps = numbered(out.steps ?? []);
+            // Written here, not by the model: it kept saying "Two" whatever the actual count.
+            const n = questions.length;
+            const message = n ? `Got it. ${COUNTS[n] ?? `${n} quick checks`} so I can narrow it down:` : out.message;
+            return Response.json({ text: [message, ...steps].join("\n\n"), questions, device, deviceType, finding, software });
+          } catch {
+            return Response.json({ text: raw, questions: [] }); // model ignored the schema; show it as plain text
+          }
+        }
+        // Gemini wraps some errors in an array.
+        error = (Array.isArray(data) ? data[0] : data).error?.message ?? r.statusText;
+        if (r.status >= 500) continue models; // 503 overload or 504 timeout: the model's the problem, not the key
       }
-      // Gemini wraps some errors in an array.
-      error = (Array.isArray(data) ? data[0] : data).error?.message ?? r.statusText;
-      if (r.status < 500 && r.status !== 429) break; // 5xx covers 503 overload and 504 timeouts
     }
-    throw new Error(error);
+    throw new Error(error || "GEMINI_API_KEY isn't set in .env");
   } catch (e) {
     return Response.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
   }
