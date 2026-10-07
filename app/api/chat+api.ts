@@ -1,5 +1,17 @@
-// Tried in order: Flash-Lite takes over when Flash is overloaded, times out (5xx) or is rate-limited (429).
-const MODELS = ["gemini-flash-latest", "gemini-flash-lite-latest"];
+// Tried in order: Flash-Lite takes over when Flash is overloaded or times out (5xx), and OpenRouter's free
+// models are the last resort when Gemini is down. Free OpenRouter models answer in ~20-35s, hence the longer wait.
+const GEMINI = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
+const MODELS: { url: string; env: string; model: string; models?: string[]; wait: number }[] = [
+  { url: GEMINI, env: "GEMINI_API_KEY", model: "gemini-flash-latest", wait: 20000 },
+  { url: GEMINI, env: "GEMINI_API_KEY", model: "gemini-flash-lite-latest", wait: 20000 },
+  {
+    url: "https://openrouter.ai/api/v1/chat/completions",
+    env: "OPENROUTER_API_KEY",
+    model: "google/gemma-4-31b-it:free",
+    models: ["google/gemma-4-31b-it:free", "dots-studio/dots-3-note-preview:free"], // OpenRouter tries these in order itself
+    wait: 60000,
+  },
+];
 
 const SYSTEM = `You are a friendly tech repair assistant. The user shows or describes damaged hardware or a software problem.
 On the user's first report (a photo, a description, or both), never diagnose yet, however obvious or urgent the problem looks
@@ -149,32 +161,34 @@ function diagnosisText(d: Diagnosis) {
 const COUNTS = ["", "One quick check", "Two quick checks", "Three quick checks"];
 
 // Runs server-side in the Expo dev server, so the API key (from .env) never reaches the phone.
-// Uses Gemini's OpenAI-compatible endpoint, so messages keep the OpenAI shape the app sends.
+// Uses OpenAI-compatible endpoints (Gemini's and OpenRouter's), so messages keep the OpenAI shape the app sends.
 export async function POST(req: Request) {
   try {
     const messages = await req.json();
     let error = "";
-    // Several keys can go in GEMINI_API_KEY, comma-separated: one that's out of quota (429) or rejected hands over to the next.
-    const keys = (process.env.GEMINI_API_KEY ?? "").split(",").map((k: string) => k.trim()).filter(Boolean);
-    models: for (const model of MODELS) {
+    models: for (const { url, env, model, models, wait } of MODELS) {
+      // Several keys can go in each env var, comma-separated: one that's out of quota (429) or rejected hands over to the next.
+      const keys = (process.env[env] ?? "").split(",").map((k: string) => k.trim()).filter(Boolean);
       for (const key of keys) {
-        const r = await fetch("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", {
+        const r = await fetch(url, {
           method: "POST",
           headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
           body: JSON.stringify({
             model,
+            models,
             reasoning_effort: "low", // default thinking took ~70s per reply; low answers in ~10s
             response_format: { type: "json_schema", json_schema: { name: "reply", schema: SCHEMA } },
             messages: [{ role: "system", content: SYSTEM }, ...messages],
           }),
-          signal: AbortSignal.timeout(20000), // an overloaded Flash can stall 30s+ before failing; move on sooner
+          signal: AbortSignal.timeout(wait), // an overloaded Flash can stall 30s+ before failing; move on sooner
         }).catch(() => null);
         if (!r) {
           error = "Request timed out";
           continue models; // a stalled model stalls on every key
         }
         const data = await r.json();
-        if (r.ok) {
+        // OpenRouter can answer 200 with only an error when its upstream provider fails.
+        if (r.ok && data.choices?.length) {
           const raw: string = data.choices[0].message.content;
           try {
             const out = JSON.parse(raw);
@@ -200,7 +214,7 @@ export async function POST(req: Request) {
         if (r.status >= 500) continue models; // 503 overload or 504 timeout: the model's the problem, not the key
       }
     }
-    throw new Error(error || "GEMINI_API_KEY isn't set in .env");
+    throw new Error(error || "No API key set in .env");
   } catch (e) {
     return Response.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
   }
