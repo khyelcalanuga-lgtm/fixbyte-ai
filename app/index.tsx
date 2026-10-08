@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useRef, useState } from "react";
+import { forwardRef, useEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import {
   Alert,
   Animated,
@@ -70,6 +70,7 @@ const TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 const GREEN = "#7CEB5A";
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const NATIVE = Platform.OS !== "web"; // Animated's native driver doesn't exist on web
+const STAGGER_MS = 350; // gap between two chat bubbles arriving in the same turn
 const STEP_MS = 900; // time each already-known checklist row spends "in progress"
 const MIN_DIAG_MS = 3000; // shortest time the Diagnosing screen stays up, so row 3 is visibly in progress too
 const RING_PAD = 6; // inset of the progress arc, so its 10pt dot isn't clipped
@@ -322,8 +323,8 @@ export default function App() {
                 </View>
               </View>
               <View style={s.home}>
-                <Text style={s.greeting}>Hey, Kiel,</Text>
-                <Text style={s.greetingSub}>What needs fixing today?</Text>
+                <Logo />
+                <Text style={s.greeting}>{greeting()}, Khyel</Text>
                 <View style={s.cards}>
                   <Card icon="camera" title="Scan a photo" subtitle="AI spots the damage" onPress={scan} />
                   <Card icon="message-square" title="Describe it" subtitle="Type the symptoms" onPress={() => input.current?.focus()} />
@@ -351,66 +352,69 @@ export default function App() {
               >
                 {turns.map((t, i) =>
                   t.role === "user" ? (
+                    // Each bubble pops in on its own, one after the other.
                     <View key={i} style={s.userTurn}>
                       {t.image && (
-                        <View style={s.photo}>
+                        <Pop from="right" style={s.photo}>
                           <Image source={{ uri: t.image }} style={s.photoImg} accessibilityLabel="Your photo" />
-                        </View>
+                        </Pop>
                       )}
                       {t.text && (
-                        <View style={[s.bubble, s.user]}>
+                        <Pop from="right" delay={t.image ? STAGGER_MS : 0} style={[s.bubble, s.user]}>
                           <Text selectable style={[s.msgText, s.userText]}>{t.text}</Text>
-                        </View>
+                        </Pop>
                       )}
                     </View>
                   ) : t.diagnosis ? (
                     // The verdict lives on the Diagnosis page; the chat keeps a card that reopens it.
-                    <Pressable key={i} onPress={() => openResult(i)} style={[s.bubble, s.assistant, s.verdictCard]}>
-                      <Text style={s.verdictLabel}>DIAGNOSIS</Text>
-                      <Text style={s.verdictTitle}>{t.diagnosis.title}</Text>
-                      <View style={s.verdictLink}>
-                        <Text style={[s.msgText, s.dim]}>View diagnosis</Text>
-                        <Feather name="chevron-right" size={16} color="rgba(0,0,0,0.5)" />
-                      </View>
-                    </Pressable>
+                    <Pop key={i} from="left">
+                      <Pressable onPress={() => openResult(i)} style={[s.bubble, s.assistant, s.verdictCard]}>
+                        <Text style={s.verdictLabel}>DIAGNOSIS</Text>
+                        <Text style={s.verdictTitle}>{t.diagnosis.title}</Text>
+                        <View style={s.verdictLink}>
+                          <Text style={[s.msgText, s.dim]}>View diagnosis</Text>
+                          <Feather name="chevron-right" size={16} color="rgba(0,0,0,0.5)" />
+                        </View>
+                      </Pressable>
+                    </Pop>
                   ) : (
                     <View key={i} style={s.assistantTurn}>
-                      <View style={[s.bubble, s.assistant]}>
+                      <Pop from="left" style={[s.bubble, s.assistant]}>
                         <Text selectable style={s.msgText}>{t.text}</Text>
-                      </View>
+                      </Pop>
                       {t.questions.length > 0 && (
-                        <View style={[s.bubble, s.assistant, s.qCard]}>
-                          {t.questions.map((q, qi) => (
-                            <View key={qi}>
-                              <Text style={s.msgText}>{q.question}</Text>
-                              <View style={s.chips}>
-                                {q.options.map((o) => {
-                                  const on = t.picked[qi] === o;
-                                  return (
-                                    <Pressable
-                                      key={o}
-                                      disabled={t !== pending}
-                                      onPress={() => choose(qi, o)}
-                                      style={[s.chip, on && s.chipOn]}
-                                      accessibilityRole="radio"
-                                      accessibilityState={{ selected: on }}
-                                    >
-                                      <Text style={[s.chipText, on && s.chipTextOn]}>{o}</Text>
-                                    </Pressable>
-                                  );
-                                })}
+                        <Pop from="left" delay={STAGGER_MS} style={[s.bubble, s.assistant, s.qCard]}>
+                            {t.questions.map((q, qi) => (
+                              <View key={qi}>
+                                <Text style={s.msgText}>{q.question}</Text>
+                                <View style={s.chips}>
+                                  {q.options.map((o) => {
+                                    const on = t.picked[qi] === o;
+                                    return (
+                                      <Pressable
+                                        key={o}
+                                        disabled={t !== pending}
+                                        onPress={() => choose(qi, o)}
+                                        style={({ pressed }) => [s.chip, on && s.chipOn, pressed && s.pressed]}
+                                        accessibilityRole="radio"
+                                        accessibilityState={{ selected: on }}
+                                      >
+                                        <Text style={[s.chipText, on && s.chipTextOn]}>{o}</Text>
+                                      </Pressable>
+                                    );
+                                  })}
+                                </View>
                               </View>
-                            </View>
-                          ))}
-                        </View>
+                            ))}
+                        </Pop>
                       )}
                     </View>
                   ),
                 )}
                 {busy && (
-                  <View style={[s.bubble, s.assistant]}>
-                    <Text style={[s.msgText, s.dim]}>Diagnosing…</Text>
-                  </View>
+                  <Pop from="left" delay={STAGGER_MS}>
+                    <Typing />
+                  </Pop>
                 )}
                 {!!error && <Text style={s.error}>{error}</Text>}
               </ScrollView>
@@ -501,6 +505,26 @@ const DEVICE_ICONS: Record<string, FeatherName> = {
   printer: "printer",
 };
 const MONO = Platform.select({ ios: "Menlo", default: "monospace" });
+const SERIF = Platform.select({ android: "serif", default: "Georgia" }); // system serif, no font package needed
+
+function greeting(hour = new Date().getHours()) {
+  if (hour >= 5 && hour < 12) return "Good Morning";
+  if (hour >= 12 && hour < 18) return "Good Afternoon";
+  return "Good Evening";
+}
+
+// FixByte mark: a tall bar beside a small block stacked over a "D" (flat left, half-round right).
+function Logo() {
+  return (
+    <View style={s.logo} accessibilityLabel="FixByte AI">
+      <View style={s.logoBar} />
+      <View style={s.logoCol}>
+        <View style={s.logoTop} />
+        <View style={s.logoD} />
+      </View>
+    </View>
+  );
+}
 
 type Shop = {
   id: string;
@@ -1078,7 +1102,7 @@ function Guide({ d, step, onStep, onClose }: { d: Diagnosis; step: number; onSte
       {/* Done steps black, current green, upcoming gray. */}
       <View style={s.segments}>
         {d.steps.map((_, i) => (
-          <View key={i} style={[s.segment, i < step && s.segmentDone, i === step && s.segmentNow]} />
+          <Segment key={i} state={i < step ? "done" : i === step ? "now" : "next"} />
         ))}
       </View>
 
@@ -1235,6 +1259,72 @@ function Diagnosing({ d, onCancel }: { d: Diag; onCancel: () => void }) {
   );
 }
 
+// New chat bubbles pop in: a quick fade and rise, springing (with a slight overshoot) from the side they sit on.
+// Keyed by turn index, so only bubbles that just arrived animate; a second bubble in the same turn waits STAGGER_MS.
+type PopProps = { from: "left" | "right"; delay?: number; style?: ComponentProps<typeof View>["style"]; children: ReactNode };
+function Pop({ from, delay = 0, style, children }: PopProps) {
+  const v = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    Animated.spring(v, { toValue: 1, delay, friction: 7, tension: 120, useNativeDriver: NATIVE }).start();
+  }, [v, delay]);
+  return (
+    <Animated.View
+      style={[
+        style,
+        {
+          opacity: v.interpolate({ inputRange: [0, 0.5], outputRange: [0, 1], extrapolate: "clamp" }),
+          transformOrigin: from === "left" ? "bottom left" : "bottom right",
+          transform: [
+            { translateY: v.interpolate({ inputRange: [0, 1], outputRange: [12, 0] }) },
+            { scale: v.interpolate({ inputRange: [0, 1], outputRange: [0.9, 1] }) },
+          ],
+        },
+      ]}
+    >
+      {children}
+    </Animated.View>
+  );
+}
+
+// Three dots hopping in turn while the reply is on its way.
+function Typing() {
+  const v = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const anim = Animated.loop(Animated.timing(v, { toValue: 1, duration: 1100, easing: Easing.linear, useNativeDriver: NATIVE }));
+    anim.start();
+    return () => anim.stop();
+  }, [v]);
+  return (
+    <View style={[s.bubble, s.assistant, s.typing]} accessibilityLabel="Diagnosing">
+      {[0, 1, 2].map((k) => {
+        const at = 0.1 + k * 0.2;
+        const translateY = v.interpolate({ inputRange: [0, at, at + 0.15, at + 0.3, 1], outputRange: [0, 0, -5, 0, 0] });
+        return <Animated.View key={k} style={[s.typingDot, { transform: [{ translateY }] }]} />;
+      })}
+    </View>
+  );
+}
+
+// Fills from the left as its step becomes current (green), turns black once done, and empties when stepping back.
+function Segment({ state }: { state: "done" | "now" | "next" }) {
+  const fill = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const anim = Animated.timing(fill, {
+      toValue: state === "next" ? 0 : 1,
+      duration: 450,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: NATIVE,
+    });
+    anim.start();
+    return () => anim.stop();
+  }, [state, fill]);
+  return (
+    <View style={s.segment}>
+      <Animated.View style={[s.segmentFill, state === "done" && s.segmentDone, { transform: [{ scaleX: fill }] }]} />
+    </View>
+  );
+}
+
 // Done: pops in. Active: pulsing dot with a ripple. Next: dashed circle slowly turning.
 function StepIcon({ state }: { state: "done" | "active" | "next" }) {
   const v = useRef(new Animated.Value(0)).current;
@@ -1304,8 +1394,13 @@ const s = StyleSheet.create({
   time: { fontFamily: "Poppins_400Regular", fontSize: 11, lineHeight: 16, textAlign: "center", color: "#000", marginTop: 4 },
 
   home: { flex: 1, justifyContent: "center", paddingHorizontal: 20 },
-  greeting: { fontFamily: "Poppins_500Medium", fontSize: 32, lineHeight: 44, textAlign: "center", color: "#000" },
-  greetingSub: { fontFamily: "Poppins_500Medium", fontSize: 20, lineHeight: 28, textAlign: "center", color: "#000", marginBottom: 20 },
+  greeting: { fontFamily: SERIF, fontSize: 28, lineHeight: 36, textAlign: "center", color: "#000", marginTop: 18, marginBottom: 28 },
+  // Measured from the logo artwork (287 tall), scaled to 80: the D's right side is a full half-circle.
+  logo: { flexDirection: "row", gap: 7, height: 80, alignSelf: "center" },
+  logoBar: { width: 20, borderRadius: 3.5, backgroundColor: "#000" },
+  logoCol: { width: 38, gap: 7 },
+  logoTop: { width: 36, height: 22, borderRadius: 3.5, backgroundColor: "#000" },
+  logoD: { flex: 1, borderRadius: 3.5, borderTopRightRadius: 25.5, borderBottomRightRadius: 25.5, backgroundColor: "#000" },
   cards: { flexDirection: "row", gap: 10 },
   card: { flex: 1, minHeight: 138, backgroundColor: "#fff", borderRadius: 25, padding: 20 },
   cardIcon: { width: 37, height: 37, borderRadius: 10, backgroundColor: "#000", alignItems: "center", justifyContent: "center", marginBottom: 18 },
@@ -1327,6 +1422,9 @@ const s = StyleSheet.create({
   chips: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 10 },
   chip: { paddingHorizontal: 20, height: 30, borderRadius: 100, borderWidth: 1, borderColor: "rgba(0,0,0,0.1)", justifyContent: "center", backgroundColor: "#fff" },
   chipOn: { backgroundColor: "#000", borderColor: "#000" },
+  pressed: { transform: [{ scale: 0.94 }] },
+  typing: { flexDirection: "row", gap: 6, paddingVertical: 20 },
+  typingDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: "rgba(0,0,0,0.35)" },
   chipText: { fontFamily: "Poppins_400Regular", fontSize: 13, color: "#000" },
   chipTextOn: { color: "#fff" },
   error: { fontFamily: "Poppins_400Regular", color: "#dc2626", textAlign: "center", marginTop: 12 },
@@ -1458,9 +1556,9 @@ const s = StyleSheet.create({
   stepCount: { height: 45, paddingHorizontal: 20, borderRadius: 100, backgroundColor: "#fff", alignItems: "center", justifyContent: "center" },
   stepCountText: { fontFamily: "Poppins_500Medium", fontSize: 15, color: "#000" },
   segments: { flexDirection: "row", gap: 5, paddingHorizontal: 20, marginTop: 16 },
-  segment: { flex: 1, height: 6, borderRadius: 3, backgroundColor: "#DDDDDD" },
+  segment: { flex: 1, height: 6, borderRadius: 3, backgroundColor: "#DDDDDD", overflow: "hidden" },
+  segmentFill: { position: "absolute", left: 0, top: 0, right: 0, bottom: 0, backgroundColor: GREEN, transformOrigin: "left" },
   segmentDone: { backgroundColor: "#000" },
-  segmentNow: { backgroundColor: GREEN },
   guideTags: { marginTop: 4 },
   stepCard: { backgroundColor: "#fff", borderRadius: 25, padding: 20, marginTop: 20 },
   stepTitle: { fontFamily: "Poppins_500Medium", fontSize: 20, lineHeight: 28, color: "#000", marginTop: 4 },
