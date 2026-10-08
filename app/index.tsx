@@ -28,6 +28,7 @@ import { useFonts } from "expo-font";
 import { Poppins_400Regular } from "@expo-google-fonts/poppins/400Regular";
 import { Poppins_500Medium } from "@expo-google-fonts/poppins/500Medium";
 import { Poppins_600SemiBold } from "@expo-google-fonts/poppins/600SemiBold";
+import { apiFetch } from "../lib/api";
 
 type Question = { question: string; options: string[] };
 type Diagnosis = {
@@ -218,7 +219,7 @@ export default function App() {
       })();
     }
     try {
-      const r = await fetch("/api/chat", {
+      const r = await apiFetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(toApi(next)),
@@ -770,7 +771,7 @@ function Shops({ t, onBack }: { t: Extract<Turn, { role: "assistant" }>; onBack:
     let live = true; // ignore a slower, older search finishing after a newer one
     setLoading(true);
     setError("");
-    fetch("/api/shops", {
+    apiFetch("/api/shops", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

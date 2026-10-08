@@ -3,3 +3,7 @@ node_modules
 .expo
 dist
 expo-env.d.ts
+android/
+artifacts/
+.firecrawl/
+.android-tools/

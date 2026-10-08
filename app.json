@@ -2,6 +2,11 @@
   "expo": {
     "name": "FixByte AI",
     "slug": "fixbyte-ai",
+    "version": "1.0.0",
+    "android": {
+      "package": "com.fixbyte.ai",
+      "versionCode": 1
+    },
     "scheme": "fixbyteai",
     "userInterfaceStyle": "light",
     "backgroundColor": "#F3F3F3",

@@ -4,6 +4,9 @@
   "main": "expo-router/entry",
   "scripts": {
     "start": "expo start",
+    "build:apk": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-apk.ps1",
+    "server:export": "expo export --platform web",
+    "server:start": "expo serve --port 8081",
     "typecheck": "tsc"
   },
   "dependencies": {

@@ -1,0 +1,13 @@
+// Keep the Windows long-path workaround local to this build.
+def ninjaPath = new File(gradle.startParameter.currentDir.parentFile, '.android-tools/ninja.exe')
+if (ninjaPath.exists()) {
+    gradle.beforeProject { project ->
+        ['com.android.application', 'com.android.library'].each { pluginId ->
+            project.pluginManager.withPlugin(pluginId) {
+                project.extensions.getByName('android').defaultConfig.externalNativeBuild.cmake.arguments(
+                    "-DCMAKE_MAKE_PROGRAM=${ninjaPath.absolutePath.replace('\\', '/')}"
+                )
+            }
+        }
+    }
+}
