@@ -141,18 +141,10 @@ export default function App() {
     input.current?.focus();
   }
 
-  function choosePhoto() {
-    const attach = async (camera: boolean) => {
-      const url = await pick(camera);
-      if (url) setImage(url);
-    };
-    // Alert buttons are a no-op on web, where the picker is a file dialog anyway.
-    if (Platform.OS === "web") return attach(false);
-    Alert.alert("Add a photo", undefined, [
-      { text: "Take photo", onPress: () => attach(true) },
-      { text: "Choose from library", onPress: () => attach(false) },
-      { text: "Cancel", style: "cancel" },
-    ]);
+  // The input bar's camera and image buttons. Web has no camera UI, so both open the file picker there.
+  async function attach(camera: boolean) {
+    const url = await pick(camera && Platform.OS !== "web");
+    if (url) setImage(url);
   }
 
   function reset() {
@@ -455,8 +447,11 @@ export default function App() {
                   </View>
                 )}
                 <View style={s.bar}>
-                  <Pressable onPress={choosePhoto} hitSlop={12} accessibilityLabel="Add photo">
+                  <Pressable onPress={() => attach(true)} hitSlop={8} accessibilityLabel="Take a photo">
                     <Feather name="camera" size={17} color="#000" />
+                  </Pressable>
+                  <Pressable onPress={() => attach(false)} hitSlop={8} style={s.barIcon} accessibilityLabel="Choose a photo">
+                    <Feather name="image" size={17} color="#000" />
                   </Pressable>
                   <TextInput
                     ref={input}
@@ -1377,7 +1372,10 @@ function Card(p: { icon: "camera" | "message-square"; title: string; subtitle: s
         <Feather name={p.icon} size={18} color="#fff" />
       </View>
       <Text style={s.cardTitle}>{p.title}</Text>
-      <Text style={s.cardSub}>{p.subtitle}</Text>
+      {/* One line: shrinks to fit on narrow phones (native) rather than wrapping. */}
+      <Text style={s.cardSub} numberOfLines={1} adjustsFontSizeToFit>
+        {p.subtitle}
+      </Text>
     </Pressable>
   );
 }
@@ -1402,10 +1400,10 @@ const s = StyleSheet.create({
   logoTop: { width: 36, height: 22, borderRadius: 3.5, backgroundColor: "#000" },
   logoD: { flex: 1, borderRadius: 3.5, borderTopRightRadius: 25.5, borderBottomRightRadius: 25.5, backgroundColor: "#000" },
   cards: { flexDirection: "row", gap: 10 },
-  card: { flex: 1, minHeight: 138, backgroundColor: "#fff", borderRadius: 25, padding: 20 },
+  card: { flex: 1, minHeight: 138, backgroundColor: "#fff", borderRadius: 25, paddingVertical: 20, paddingHorizontal: 18 },
   cardIcon: { width: 37, height: 37, borderRadius: 10, backgroundColor: "#000", alignItems: "center", justifyContent: "center", marginBottom: 18 },
   cardTitle: { fontFamily: "Poppins_500Medium", fontSize: 15, lineHeight: 22, color: "#000" },
-  cardSub: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 20, color: "rgba(0,0,0,0.5)" },
+  cardSub: { fontFamily: "Poppins_400Regular", fontSize: 12, lineHeight: 20, color: "rgba(0,0,0,0.5)" },
 
   log: { paddingHorizontal: 20, paddingTop: 16, paddingBottom: 12, gap: 10 },
   userTurn: { alignItems: "flex-end", gap: 10 },
@@ -1445,6 +1443,7 @@ const s = StyleSheet.create({
     paddingLeft: 20,
     paddingRight: 6,
   },
+  barIcon: { marginLeft: 16 },
   input: { flex: 1, height: "100%", marginLeft: 15, fontFamily: "Poppins_400Regular", fontSize: 15, color: "#000" },
   send: { width: 45, height: 45, borderRadius: 100, backgroundColor: GREEN, alignItems: "center", justifyContent: "center" },
   disabled: { opacity: 0.5 },
