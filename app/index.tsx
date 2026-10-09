@@ -29,6 +29,7 @@ import { Poppins_400Regular } from "@expo-google-fonts/poppins/400Regular";
 import { Poppins_500Medium } from "@expo-google-fonts/poppins/500Medium";
 import { Poppins_600SemiBold } from "@expo-google-fonts/poppins/600SemiBold";
 import { apiFetch } from "../lib/api";
+import { DAILY_LIMIT, recordUse, usedToday } from "../lib/usage";
 
 type Question = { question: string; options: string[] };
 type Diagnosis = {
@@ -108,6 +109,7 @@ export default function App() {
   const [resultIdx, setResultIdx] = useState<number | null>(null); // turn shown on the Diagnosis page
   const [guideStep, setGuideStep] = useState<number | null>(null); // Repair Guide step on screen, null = closed
   const [showShops, setShowShops] = useState(false); // Repair Shops page, opened from "Find a repair shop"
+  const [used, setUsed] = useState(0); // diagnoses started today
   const scroll = useRef<ScrollView>(null);
   const input = useRef<TextInput>(null);
   const run = useRef(0); // bumped by cancel() so a late reply from a cancelled request is ignored
@@ -115,6 +117,18 @@ export default function App() {
 
   const last = turns[turns.length - 1];
   const pending = last?.role === "assistant" && last.questions.length > 0 && !busy ? last : null;
+
+  // Read after mount: the web build also renders on the server, where there's no stored count.
+  useEffect(() => setUsed(usedToday()), []);
+
+  // A new diagnosis takes one of today's free uses; its questions and follow-ups don't count.
+  function limitReached() {
+    const n = usedToday(); // fresh, so a new day frees up uses even if the app stayed open
+    setUsed(n);
+    if (n < DAILY_LIMIT) return false;
+    setError(`You've used today's ${DAILY_LIMIT} free diagnoses. Come back tomorrow.`);
+    return true;
+  }
 
   async function pick(camera: boolean) {
     const perm = camera
@@ -136,6 +150,7 @@ export default function App() {
   // "Scan a photo": straight to the camera, then attach it so the user can describe what happened before sending.
   // Web has no camera UI, so it opens the file picker.
   async function scan() {
+    if (limitReached()) return;
     const url = await pick(Platform.OS !== "web");
     if (!url) return;
     setImage(url);
@@ -191,6 +206,7 @@ export default function App() {
       ?.questions.flatMap((q, i) => (pending.picked[i] ? [`${q.question} ${pending.picked[i]}`] : []))
       .join("\n");
     if (busy || (!text.trim() && !image && !answers)) return;
+    if (!turns.length && limitReached()) return;
 
     const next: Turn[] = [...turns, { role: "user", image: image ?? undefined, text: text.trim() || undefined, answers }];
     setTurns(next);
@@ -228,6 +244,7 @@ export default function App() {
       const data = await r.json();
       if (!r.ok) throw new Error(data.error);
       if (id !== run.current) return;
+      if (!turns.length) setUsed(recordUse()); // counted once the AI answers, so a failed request doesn't cost a use
       const seconds = Math.max(1, Math.round((Date.now() - sentAt) / 1000));
       if (pending && answers) {
         // Fast replies (~1.5s) would flash the screen by before its checklist animation plays.
@@ -286,6 +303,7 @@ export default function App() {
   if (!fontsLoaded) return null;
 
   const home = turns.length === 0 && !busy;
+  const out = home && used >= DAILY_LIMIT;
   const time = startedAt?.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }).toUpperCase();
   const shown = resultIdx === null ? undefined : turns[resultIdx];
   const result = shown?.role === "assistant" && shown.diagnosis ? shown : undefined;
@@ -428,6 +446,7 @@ export default function App() {
               </>
             ) : (
               <>
+                {!result && <Usage used={used} />}
                 {result ? (
                   <View style={[s.actions, s.actionsGap]}>
                     <Pressable onPress={() => setGuideStep(0)} style={s.guideBtn} accessibilityRole="button">
@@ -464,7 +483,7 @@ export default function App() {
                     accessibilityLabel="Message"
                     style={s.input}
                   />
-                  <Pressable onPress={() => send()} disabled={busy} style={[s.send, busy && s.disabled]} accessibilityLabel="Send">
+                  <Pressable onPress={() => send()} disabled={busy || out} style={[s.send, (busy || out) && s.disabled]} accessibilityLabel="Send">
                     <Feather name="arrow-up" size={18} color="#fff" />
                   </Pressable>
                 </View>
@@ -953,6 +972,20 @@ function Shops({ t, onBack }: { t: Extract<Turn, { role: "assistant" }>; onBack:
   );
 }
 
+// Today's free diagnoses, shown above the input bar: a green pip for each one left.
+function Usage({ used }: { used: number }) {
+  const left = Math.max(0, DAILY_LIMIT - used);
+  const label = left ? `${left} OF ${DAILY_LIMIT} DIAGNOSES LEFT TODAY` : "LIMIT REACHED · RESETS AT MIDNIGHT";
+  return (
+    <View style={s.usage} accessibilityLabel={label.toLowerCase()}>
+      {Array.from({ length: DAILY_LIMIT }, (_, i) => (
+        <View key={i} style={[s.usagePip, i < left && s.usagePipOn]} />
+      ))}
+      <Text style={[s.monoLabel, s.usageText]}>{label}</Text>
+    </View>
+  );
+}
+
 function Bookmark({ saved, big, onPress }: { saved: boolean; big?: boolean; onPress: () => void }) {
   return (
     <Pressable
@@ -1429,6 +1462,10 @@ const s = StyleSheet.create({
   error: { fontFamily: "Poppins_400Regular", color: "#dc2626", textAlign: "center", marginTop: 12 },
 
   footer: { paddingHorizontal: 20, paddingBottom: 20, paddingTop: 8 },
+  usage: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5, marginBottom: 12 },
+  usagePip: { width: 16, height: 6, borderRadius: 3, backgroundColor: "#DDDDDD" },
+  usagePipOn: { backgroundColor: GREEN },
+  usageText: { marginLeft: 5 },
   hint: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 20, textAlign: "center", color: "rgba(0,0,0,0.4)", marginBottom: 12 },
   preview: { alignSelf: "flex-start", marginBottom: 8, marginLeft: 8 },
   thumb: { width: 64, height: 64, borderRadius: 14 },

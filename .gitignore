@@ -7,3 +7,4 @@ android/
 artifacts/
 .firecrawl/
 .android-tools/
+.cloud-tools/

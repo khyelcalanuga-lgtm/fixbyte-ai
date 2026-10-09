@@ -1,16 +1,19 @@
 param(
-    [Parameter(Mandatory = $true)]
     [string]$ApiUrl,
     [string]$Architectures = 'arm64-v8a,armeabi-v7a,x86_64'
 )
 
 $ErrorActionPreference = 'Stop'
+$projectRoot = Split-Path -Parent $PSScriptRoot
+if (-not $ApiUrl) {
+    $appSettings = Get-Content -Raw -LiteralPath (Join-Path $projectRoot 'app.json') | ConvertFrom-Json
+    $ApiUrl = $appSettings.expo.extra.apiUrl
+}
 $apiUri = $null
-if (-not [Uri]::TryCreate($ApiUrl, [UriKind]::Absolute, [ref]$apiUri) -or $apiUri.Scheme -notin @('http', 'https')) {
-    throw 'ApiUrl must be an absolute HTTP or HTTPS URL.'
+if (-not [Uri]::TryCreate($ApiUrl, [UriKind]::Absolute, [ref]$apiUri) -or $apiUri.Scheme -ne 'https' -or $apiUri.IsLoopback) {
+    throw 'Configure a hosted HTTPS API URL in app.json extra.apiUrl, or pass -ApiUrl. APKs must work without a local computer server.'
 }
 
-$projectRoot = Split-Path -Parent $PSScriptRoot
 $studioJava = Join-Path $env:ProgramFiles 'Android\Android Studio\jbr'
 if (-not $env:JAVA_HOME -and (Test-Path -LiteralPath $studioJava)) { $env:JAVA_HOME = $studioJava }
 if (-not $env:ANDROID_HOME) { $env:ANDROID_HOME = Join-Path $env:LOCALAPPDATA 'Android\Sdk' }
@@ -36,6 +39,6 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'APK compilation failed.' }
     } finally { Pop-Location }
     New-Item -ItemType Directory -Path artifacts -Force | Out-Null
-    Copy-Item -LiteralPath android/app/build/outputs/apk/release/app-release.apk -Destination artifacts/FixByte-AI-test.apk
-    Write-Output "APK: $projectRoot\artifacts\FixByte-AI-test.apk"
+    Copy-Item -LiteralPath android/app/build/outputs/apk/release/app-release.apk -Destination artifacts/FixByte-AI.apk
+    Write-Output "APK: $projectRoot\artifacts\FixByte-AI.apk"
 } finally { Pop-Location }

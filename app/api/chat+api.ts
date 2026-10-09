@@ -160,7 +160,7 @@ function diagnosisText(d: Diagnosis) {
 
 const COUNTS = ["", "One quick check", "Two quick checks", "Three quick checks"];
 
-// Runs server-side in the Expo dev server, so the API key (from .env) never reaches the phone.
+// Runs on the hosted server, so the provider API keys never reach the phone.
 // Uses OpenAI-compatible endpoints (Gemini's and OpenRouter's), so messages keep the OpenAI shape the app sends.
 export async function POST(req: Request) {
   try {
