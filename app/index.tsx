@@ -8,7 +8,10 @@ import {
   Linking,
   PanResponder,
   Platform,
-  Pressable,
+  Pressable as RNPressable,
+  type PressableProps,
+  type StyleProp,
+  type ViewStyle,
   ScrollView,
   Share,
   StyleSheet,
@@ -102,6 +105,7 @@ export default function App() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [text, setText] = useState("");
   const [image, setImage] = useState<string | null>(null); // data URL
+  const [attachOpen, setAttachOpen] = useState(false); // the paperclip's camera / gallery menu
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [startedAt, setStartedAt] = useState<Date | null>(null);
@@ -159,6 +163,7 @@ export default function App() {
 
   // The input bar's camera and image buttons. Web has no camera UI, so both open the file picker there.
   async function attach(camera: boolean) {
+    setAttachOpen(false);
     const url = await pick(camera && Platform.OS !== "web");
     if (url) setImage(url);
   }
@@ -407,7 +412,7 @@ export default function App() {
                                         key={o}
                                         disabled={t !== pending}
                                         onPress={() => choose(qi, o)}
-                                        style={({ pressed }) => [s.chip, on && s.chipOn, pressed && s.pressed]}
+                                        style={[s.chip, on && s.chipOn]}
                                         accessibilityRole="radio"
                                         accessibilityState={{ selected: on }}
                                       >
@@ -468,14 +473,17 @@ export default function App() {
                   </View>
                 )}
                 <View style={s.bar}>
-                  <Pressable onPress={() => attach(true)} hitSlop={8} accessibilityLabel="Take a photo">
-                    <Feather name="camera" size={17} color="#000" />
-                  </Pressable>
-                  <Pressable onPress={() => attach(false)} hitSlop={8} style={s.barIcon} accessibilityLabel="Choose a photo">
-                    <Feather name="image" size={17} color="#000" />
+                  <Pressable
+                    onPress={() => setAttachOpen((o) => !o)}
+                    hitSlop={8}
+                    accessibilityLabel={attachOpen ? "Close attach menu" : "Attach a photo"}
+                    accessibilityState={{ expanded: attachOpen }}
+                  >
+                    <Feather name={attachOpen ? "x" : "paperclip"} size={17} color="#000" />
                   </Pressable>
                   <TextInput
                     ref={input}
+                    onFocus={() => setAttachOpen(false)}
                     value={text}
                     onChangeText={setText}
                     onSubmitEditing={() => send()}
@@ -491,6 +499,20 @@ export default function App() {
               </>
             )}
           </View>
+          {/* Floats over the page just above the message bar, so nothing else moves. It's a child of this
+              full-screen view rather than the footer: Android ignores taps outside a parent's bounds. */}
+          {attachOpen && (
+            <Pop from="left" style={s.attachMenu}>
+              <Pressable onPress={() => attach(true)} style={s.attachItem} accessibilityRole="button">
+                <Feather name="camera" size={17} color="#000" />
+                <Text style={s.attachText}>Take a photo</Text>
+              </Pressable>
+              <Pressable onPress={() => attach(false)} style={s.attachItem} accessibilityRole="button">
+                <Feather name="image" size={17} color="#000" />
+                <Text style={s.attachText}>Choose from gallery</Text>
+              </Pressable>
+            </Pop>
+          )}
         </KeyboardAvoidingView>
       )}
     </SafeAreaView>
@@ -1312,6 +1334,29 @@ function Diagnosing({ d, onCancel }: { d: Diag; onCancel: () => void }) {
   );
 }
 
+// Every button eases down a little while pressed and springs back on release. It shadows RN's Pressable,
+// so all buttons in this file get it.
+const AnimatedPressable = Animated.createAnimatedComponent(RNPressable);
+function Pressable({ style, onPressIn, onPressOut, ...props }: PressableProps) {
+  const scale = useRef(new Animated.Value(1)).current;
+  const to = (toValue: number) =>
+    Animated.spring(scale, { toValue, speed: 40, bounciness: toValue === 1 ? 8 : 0, useNativeDriver: NATIVE }).start();
+  return (
+    <AnimatedPressable
+      {...props}
+      onPressIn={(e) => {
+        to(0.95);
+        onPressIn?.(e);
+      }}
+      onPressOut={(e) => {
+        to(1);
+        onPressOut?.(e);
+      }}
+      style={[style as StyleProp<ViewStyle>, { transform: [{ scale }] }]}
+    />
+  );
+}
+
 // New chat bubbles pop in: a quick fade and rise, springing (with a slight overshoot) from the side they sit on.
 // Keyed by turn index, so only bubbles that just arrived animate; a second bubble in the same turn waits STAGGER_MS.
 type PopProps = { from: "left" | "right"; delay?: number; style?: ComponentProps<typeof View>["style"]; children: ReactNode };
@@ -1478,7 +1523,6 @@ const s = StyleSheet.create({
   chips: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 10 },
   chip: { paddingHorizontal: 20, height: 30, borderRadius: 100, borderWidth: 1, borderColor: "rgba(0,0,0,0.1)", justifyContent: "center", backgroundColor: "#fff" },
   chipOn: { backgroundColor: "#000", borderColor: "#000" },
-  pressed: { transform: [{ scale: 0.94 }] },
   typing: { flexDirection: "row", gap: 6, paddingVertical: 20 },
   typingDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: "rgba(0,0,0,0.35)" },
   chipText: { fontFamily: "Poppins_400Regular", fontSize: 13, color: "#000" },
@@ -1505,7 +1549,10 @@ const s = StyleSheet.create({
     paddingLeft: 20,
     paddingRight: 6,
   },
-  barIcon: { marginLeft: 16 },
+  // bottom = footer's bottom padding (20) + bar height (59) + an 8pt gap.
+  attachMenu: { position: "absolute", left: 20, bottom: 87, padding: 6, borderRadius: 22, backgroundColor: "#fff", borderWidth: 1, borderColor: "rgba(0,0,0,0.07)" },
+  attachItem: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 12, paddingHorizontal: 14, borderRadius: 16 },
+  attachText: { fontFamily: "Poppins_400Regular", fontSize: 14, color: "#000" },
   input: { flex: 1, height: "100%", marginLeft: 15, fontFamily: "Poppins_400Regular", fontSize: 15, color: "#000" },
   send: { width: 45, height: 45, borderRadius: 100, backgroundColor: GREEN, alignItems: "center", justifyContent: "center" },
   disabled: { opacity: 0.5 },
