@@ -1402,9 +1402,7 @@ function StepIcon({ state }: { state: "done" | "active" | "next" }) {
 function Card(p: { icon: "camera" | "message-square"; title: string; subtitle: string; onPress: () => void }) {
   return (
     <Pressable onPress={p.onPress} style={s.card}>
-      <View style={s.cardIcon}>
-        <Feather name={p.icon} size={18} color="#fff" />
-      </View>
+      <Feather name={p.icon} size={22} color="#000" style={s.cardIcon} />
       <Text style={s.cardTitle}>{p.title}</Text>
       {/* One line: shrinks to fit on narrow phones (native) rather than wrapping. */}
       <Text style={s.cardSub} numberOfLines={1} adjustsFontSizeToFit>
@@ -1434,8 +1432,8 @@ const s = StyleSheet.create({
   logoTop: { width: 36, height: 22, borderRadius: 3.5, backgroundColor: "#000" },
   logoD: { flex: 1, borderRadius: 3.5, borderTopRightRadius: 25.5, borderBottomRightRadius: 25.5, backgroundColor: "#000" },
   cards: { flexDirection: "row", gap: 10 },
-  card: { flex: 1, minHeight: 138, backgroundColor: "#fff", borderRadius: 25, paddingVertical: 20, paddingHorizontal: 18 },
-  cardIcon: { width: 37, height: 37, borderRadius: 10, backgroundColor: "#000", alignItems: "center", justifyContent: "center", marginBottom: 18 },
+  card: { flex: 1, backgroundColor: "#fff", borderRadius: 25, paddingVertical: 20, paddingHorizontal: 18 },
+  cardIcon: { marginBottom: 18 },
   cardTitle: { fontFamily: "Poppins_500Medium", fontSize: 15, lineHeight: 22, color: "#000" },
   cardSub: { fontFamily: "Poppins_400Regular", fontSize: 12, lineHeight: 20, color: "rgba(0,0,0,0.5)" },
 
