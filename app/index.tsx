@@ -319,6 +319,7 @@ export default function App() {
         <Shops t={result} onBack={() => setShowShops(false)} />
       ) : (
         <KeyboardAvoidingView style={s.flex} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+          {home && !result && <DotGlow />}
           {result ? (
             <Result t={result} onBack={() => setResultIdx(null)} />
           ) : home ? (
@@ -526,6 +527,29 @@ function greeting(hour = new Date().getHours()) {
   if (hour >= 5 && hour < 12) return "Good Morning";
   if (hour >= 12 && hour < 18) return "Good Afternoon";
   return "Good Evening";
+}
+
+// Home background: a circle of black dots behind the message bar, fading out toward its edge.
+// Dots are placed in code (not an SVG mask) so it renders the same on Android, iOS and web.
+const GLOW_R = 450; // circle radius
+const GLOW_Y = 90; // circle center's height above the bottom edge
+const GLOW_GAP = 16; // dot spacing
+const GLOW_DOTS: { x: number; y: number; o: number }[] = [];
+for (let x = -GLOW_R; x <= GLOW_R; x += GLOW_GAP)
+  for (let y = -GLOW_R; y <= GLOW_Y; y += GLOW_GAP) {
+    // y stops at GLOW_Y: dots further down would sit below the screen's bottom edge.
+    const d = Math.hypot(x, y);
+    if (d < GLOW_R) GLOW_DOTS.push({ x: x + GLOW_R, y: y + GLOW_R, o: 0.1 * (1 - d / GLOW_R) ** 1.5 });
+  }
+
+function DotGlow() {
+  return (
+    <Svg width={GLOW_R * 2} height={GLOW_R * 2} style={s.glow} pointerEvents="none">
+      {GLOW_DOTS.map((p, i) => (
+        <Circle key={i} cx={p.x} cy={p.y} r={1.5} fill="#000" opacity={p.o} />
+      ))}
+    </Svg>
+  );
 }
 
 // FixByte mark: a tall bar beside a small block stacked over a "D" (flat left, half-round right).
@@ -1424,6 +1448,8 @@ const s = StyleSheet.create({
   time: { fontFamily: "Poppins_400Regular", fontSize: 11, lineHeight: 16, textAlign: "center", color: "#000", marginTop: 4 },
 
   home: { flex: 1, justifyContent: "center", paddingHorizontal: 20 },
+  // Centered horizontally, with the circle's middle ~90pt above the bottom (behind the message bar).
+  glow: { position: "absolute", left: "50%", marginLeft: -GLOW_R, bottom: GLOW_Y - GLOW_R },
   greeting: { fontFamily: SERIF, fontSize: 28, lineHeight: 36, textAlign: "center", color: "#000", marginTop: 18, marginBottom: 28 },
   // Measured from the logo artwork (287 tall), scaled to 80: the D's right side is a full half-circle.
   logo: { flexDirection: "row", gap: 7, height: 80, alignSelf: "center" },
