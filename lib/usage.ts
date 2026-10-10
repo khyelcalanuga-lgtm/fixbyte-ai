@@ -5,7 +5,7 @@ import { File, Paths } from "expo-file-system";
 // ponytail: a per-device count; reinstalling or clearing app data resets it. Count on the server per account if that gets abused.
 export const DAILY_LIMIT = 3;
 
-const KEY = "usage.json";
+const KEY = "usage-2.json"; // renaming this resets every device's count (the old file is just ignored)
 const today = () => new Date().toDateString(); // local day, so it resets at the user's midnight
 
 function read(): string | null {

@@ -1,14 +1,24 @@
-// Tried in order: Flash-Lite takes over when Flash is overloaded or times out (5xx), and OpenRouter's free
-// models are the last resort when Gemini is down. Free OpenRouter models answer in ~20-35s, hence the longer wait.
+// Tried in order until one answers. All are free tiers with OpenAI-compatible endpoints; a provider whose key
+// isn't set (in .env locally, EAS env vars when hosted) is skipped. Gemini comes first but is sometimes refused by
+// region on the hosted server; the next ones aren't region-blocked. Free OpenRouter models answer in ~20-35s, so
+// they're last with the longest wait. `extra` holds provider-specific fields: some (Mistral) reject unknown ones.
 const GEMINI = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
-const MODELS: { url: string; env: string; model: string; models?: string[]; wait: number }[] = [
-  { url: GEMINI, env: "GEMINI_API_KEY", model: "gemini-flash-latest", wait: 20000 },
-  { url: GEMINI, env: "GEMINI_API_KEY", model: "gemini-flash-lite-latest", wait: 20000 },
+const LOW = { reasoning_effort: "low" }; // default thinking took ~70s per reply; low answers in ~10s
+type Provider = { url: string; env: string; model: string; extra?: Record<string, unknown>; wait: number };
+const MODELS: Provider[] = [
+  { url: GEMINI, env: "GEMINI_API_KEY", model: "gemini-flash-latest", extra: LOW, wait: 20000 },
+  { url: GEMINI, env: "GEMINI_API_KEY", model: "gemini-flash-lite-latest", extra: LOW, wait: 20000 },
+  // Groq and Mistral models checked against their keys on 2026-10-09; GitHub Models still unverified (no token yet).
+  // A wrong or retired model fails fast (4xx) and the next takes over.
+  { url: "https://api.groq.com/openai/v1/chat/completions", env: "GROQ_API_KEY", model: "qwen/qwen3.8-27b", wait: 20000 }, // sees photos; ~1-2s
+  { url: "https://api.mistral.ai/v1/chat/completions", env: "MISTRAL_API_KEY", model: "mistral-small-latest", wait: 30000 },
+  { url: "https://models.github.ai/inference/chat/completions", env: "GITHUB_MODELS_TOKEN", model: "openai/gpt-4.1-mini", wait: 30000 },
   {
     url: "https://openrouter.ai/api/v1/chat/completions",
     env: "OPENROUTER_API_KEY",
     model: "google/gemma-4-31b-it:free",
-    models: ["google/gemma-4-31b-it:free", "dots-studio/dots-3-note-preview:free"], // OpenRouter tries these in order itself
+    // OpenRouter tries these in order itself.
+    extra: { ...LOW, models: ["google/gemma-4-31b-it:free", "dots-studio/dots-3-note-preview:free"] },
     wait: 60000,
   },
 ];
@@ -166,17 +176,18 @@ export async function POST(req: Request) {
   try {
     const messages = await req.json();
     let error = "";
-    models: for (const { url, env, model, models, wait } of MODELS) {
+    const tried: string[] = []; // failed attempts, reported in the x-tried header
+    models: for (const { url, env, model, extra, wait } of MODELS) {
       // Several keys can go in each env var, comma-separated: one that's out of quota (429) or rejected hands over to the next.
       const keys = (process.env[env] ?? "").split(",").map((k: string) => k.trim()).filter(Boolean);
+      if (!keys.length) tried.push(`${model}: no ${env}`);
       for (const key of keys) {
         const r = await fetch(url, {
           method: "POST",
           headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
           body: JSON.stringify({
             model,
-            models,
-            reasoning_effort: "low", // default thinking took ~70s per reply; low answers in ~10s
+            ...extra,
             response_format: { type: "json_schema", json_schema: { name: "reply", schema: SCHEMA } },
             messages: [{ role: "system", content: SYSTEM }, ...messages],
           }),
@@ -184,12 +195,15 @@ export async function POST(req: Request) {
         }).catch(() => null);
         if (!r) {
           error = "Request timed out";
+          tried.push(`${model}: timeout`);
           continue models; // a stalled model stalls on every key
         }
         const data = await r.json();
         // OpenRouter can answer 200 with only an error when its upstream provider fails.
         if (r.ok && data.choices?.length) {
           const raw: string = data.choices[0].message.content;
+          // Which model answered and what failed first: shows where a slow reply's time went.
+          const headers = { "x-model": data.model ?? model, "x-tried": tried.join(" | ") };
           try {
             const out = JSON.parse(raw);
             const { device, deviceType, finding, software } = out;
@@ -197,20 +211,21 @@ export async function POST(req: Request) {
             // Questions take precedence: a reply that asks something isn't a diagnosis yet.
             const diagnosis: Diagnosis | undefined = out.kind === "diagnosis" && !questions.length ? out.diagnosis : undefined;
             if (diagnosis) {
-              return Response.json({ text: diagnosisText(diagnosis), questions, device, deviceType, finding, software, diagnosis });
+              return Response.json({ text: diagnosisText(diagnosis), questions, device, deviceType, finding, software, diagnosis }, { headers });
             }
             // Steps come back as a list because JSON mode ignores "put each step on its own line".
             const steps = numbered(out.steps ?? []);
             // Written here, not by the model: it kept saying "Two" whatever the actual count.
             const n = questions.length;
             const message = n ? `Got it. ${COUNTS[n] ?? `${n} quick checks`} so I can narrow it down:` : out.message;
-            return Response.json({ text: [message, ...steps].join("\n\n"), questions, device, deviceType, finding, software });
+            return Response.json({ text: [message, ...steps].join("\n\n"), questions, device, deviceType, finding, software }, { headers });
           } catch {
-            return Response.json({ text: raw, questions: [] }); // model ignored the schema; show it as plain text
+            return Response.json({ text: raw, questions: [] }, { headers }); // model ignored the schema; show it as plain text
           }
         }
         // Gemini wraps some errors in an array.
         error = (Array.isArray(data) ? data[0] : data).error?.message ?? r.statusText;
+        tried.push(`${model}: ${r.status} ${error}`.slice(0, 120));
         if (r.status >= 500) continue models; // 503 overload or 504 timeout: the model's the problem, not the key
       }
     }

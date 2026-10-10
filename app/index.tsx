@@ -4,6 +4,7 @@ import {
   Animated,
   Easing,
   Image,
+  Keyboard,
   KeyboardAvoidingView,
   Linking,
   PanResponder,
@@ -474,7 +475,10 @@ export default function App() {
                 )}
                 <View style={s.bar}>
                   <Pressable
-                    onPress={() => setAttachOpen((o) => !o)}
+                    onPress={() => {
+                      Keyboard.dismiss(); // otherwise the open keyboard covers the menu
+                      setAttachOpen((o) => !o);
+                    }}
                     hitSlop={8}
                     accessibilityLabel={attachOpen ? "Close attach menu" : "Attach a photo"}
                     accessibilityState={{ expanded: attachOpen }}
@@ -818,7 +822,10 @@ function Shops({ t, onBack }: { t: Extract<Turn, { role: "assistant" }>; onBack:
       try {
         const perm = await Location.requestForegroundPermissionsAsync();
         if (!perm.granted) throw new Error("Location is off. Type a city above to search there.");
-        const p = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        // A recent last-known position is instant; a fresh GPS fix can take several seconds on a phone.
+        const p =
+          (await Location.getLastKnownPositionAsync({ maxAge: 10 * 60_000 }).catch(() => null)) ??
+          (await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }));
         setLoc({ lat: p.coords.latitude, lng: p.coords.longitude });
         // City and region names for the labels; reverse geocoding isn't available on web, so they're optional.
         Location.reverseGeocodeAsync(p.coords)
