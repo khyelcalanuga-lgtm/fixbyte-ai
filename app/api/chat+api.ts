@@ -174,7 +174,15 @@ const COUNTS = ["", "One quick check", "Two quick checks", "Three quick checks"]
 // Uses OpenAI-compatible endpoints (Gemini's and OpenRouter's), so messages keep the OpenAI shape the app sends.
 export async function POST(req: Request) {
   try {
-    const messages = await req.json();
+    // The app sends { messages, language }; older builds (the installed APK) send just the messages.
+    const body = await req.json();
+    const messages = Array.isArray(body) ? body : body.messages;
+    const language: string | undefined = Array.isArray(body) ? undefined : body.language;
+    // Field names and the fixed choices (kind, category, difficulty, risk...) stay English: the app reads them.
+    const system =
+      language && language !== "English"
+        ? `${SYSTEM}\nWrite all text meant for the user (messages, questions, answer options, titles, details) in ${language}.`
+        : SYSTEM;
     let error = "";
     const tried: string[] = []; // failed attempts, reported in the x-tried header
     models: for (const { url, env, model, extra, wait } of MODELS) {
@@ -189,7 +197,7 @@ export async function POST(req: Request) {
             model,
             ...extra,
             response_format: { type: "json_schema", json_schema: { name: "reply", schema: SCHEMA } },
-            messages: [{ role: "system", content: SYSTEM }, ...messages],
+            messages: [{ role: "system", content: system }, ...messages],
           }),
           signal: AbortSignal.timeout(wait), // an overloaded Flash can stall 30s+ before failing; move on sooner
         }).catch(() => null);

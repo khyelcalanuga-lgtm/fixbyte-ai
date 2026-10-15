@@ -26,14 +26,17 @@ import { StatusBar } from "expo-status-bar";
 import * as ImagePicker from "expo-image-picker";
 import { Feather } from "@expo/vector-icons";
 import * as Location from "expo-location";
-import Svg, { Circle, Polyline, type CircleProps } from "react-native-svg";
+import Svg, { Circle, Path, Polyline, type CircleProps } from "react-native-svg";
 import { useFonts } from "expo-font";
 // Per-weight imports: the package root pulls in all 18 Poppins files.
 import { Poppins_400Regular } from "@expo-google-fonts/poppins/400Regular";
 import { Poppins_500Medium } from "@expo-google-fonts/poppins/500Medium";
 import { Poppins_600SemiBold } from "@expo-google-fonts/poppins/600SemiBold";
 import { apiFetch } from "../lib/api";
-import { DAILY_LIMIT, recordUse, usedToday } from "../lib/usage";
+import { DAILY_LIMIT, recordUse, resetUsage, usedToday } from "../lib/usage";
+import { load, save } from "../lib/store";
+import { allowReminders, cancelReminders, remindLater } from "../lib/reminders";
+import Constants from "expo-constants";
 
 type Question = { question: string; options: string[] };
 type Diagnosis = {
@@ -103,6 +106,17 @@ function toApi(turns: Turn[]) {
 
 export default function App() {
   const [fontsLoaded] = useFonts({ Poppins_400Regular, Poppins_500Medium, Poppins_600SemiBold });
+  const [start, setStart] = useState(true); // the start page, until it has faded out
+  const [settings, setSettings] = useState(loadSettings); // name, email and preferences, saved on the device
+  const updateSettings = (patch: Partial<Settings>) =>
+    setSettings((cur) => {
+      const next = { ...cur, ...patch };
+      save(SETTINGS_KEY, JSON.stringify(next));
+      return next;
+    });
+  const [tab, setTab] = useState<Tab>("home"); // My gadgets opens from Home's phone button; the tab bar does the rest
+  const [welcomed, setWelcomed] = useState(() => load(WELCOMED) === "yes"); // past the welcome page, ever
+  const [authMode, setAuthMode] = useState<AuthMode | null>(null); // Sign in / Create account, opened from Welcome
   const [turns, setTurns] = useState<Turn[]>([]);
   const [text, setText] = useState("");
   const [image, setImage] = useState<string | null>(null); // data URL
@@ -244,7 +258,7 @@ export default function App() {
       const r = await apiFetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(toApi(next)),
+        body: JSON.stringify({ messages: toApi(next), language: settings.language }),
         signal: ctrl.signal,
       });
       const data = await r.json();
@@ -279,7 +293,10 @@ export default function App() {
           seconds,
         },
       ]);
-      if (data.diagnosis) openResult(next.length);
+      if (data.diagnosis) {
+        openResult(next.length);
+        if (settings.reminders) remindLater(data.device, data.diagnosis.summary);
+      }
     } catch (err) {
       if (id !== run.current) return; // cancelled; cancel() already restored the screen
       setTurns(turns); // roll back so history stays valid (keeps any picked answers)
@@ -306,7 +323,7 @@ export default function App() {
     setBusy(false);
   }
 
-  if (!fontsLoaded) return null;
+  if (!fontsLoaded) return <StartPage />;
 
   const home = turns.length === 0 && !busy;
   const out = home && used >= DAILY_LIMIT;
@@ -317,12 +334,52 @@ export default function App() {
   return (
     <SafeAreaView style={s.screen} edges={["top", "left", "right"]}>
       <StatusBar style="dark" />
-      {diag ? (
+      {!welcomed ? (
+        authMode ? (
+          <Auth
+            key={authMode}
+            initial={authMode}
+            onBack={() => setAuthMode(null)}
+            onDone={() => {
+              save(WELCOMED, "yes");
+              setWelcomed(true);
+            }}
+          />
+        ) : (
+          <Welcome onStart={() => setAuthMode("register")} onSignIn={() => setAuthMode("signin")} />
+        )
+      ) : tab === "gadgets" ? (
+        <Gadgets />
+      ) : tab === "history" ? (
+        <History />
+      ) : tab === "profile" ? (
+        <Profile
+          settings={settings}
+          onChange={updateSettings}
+          onSignOut={() => {
+            save(WELCOMED, "no");
+            setWelcomed(false);
+            setAuthMode(null);
+            setTab("home");
+          }}
+          onErase={() => {
+            cancelReminders();
+            resetUsage();
+            setUsed(0);
+            save(SETTINGS_KEY, "{}");
+            setSettings(DEFAULT_SETTINGS);
+            save(WELCOMED, "no");
+            setWelcomed(false);
+            setAuthMode(null);
+            setTab("home");
+          }}
+        />
+      ) : diag ? (
         <Diagnosing d={diag} onCancel={cancel} />
       ) : result && guideStep !== null ? (
         <Guide d={result.diagnosis!} step={guideStep} onStep={setGuideStep} onClose={() => setGuideStep(null)} />
       ) : result && showShops ? (
-        <Shops t={result} onBack={() => setShowShops(false)} />
+        <Shops t={result} region={settings.region} onBack={() => setShowShops(false)} />
       ) : (
         <KeyboardAvoidingView style={s.flex} behavior={Platform.OS === "ios" ? "padding" : undefined}>
           {home && !result && <DotGlow />}
@@ -331,18 +388,20 @@ export default function App() {
           ) : home ? (
             <>
               <View style={s.header}>
-                <View style={s.circle}>
+                <Pressable onPress={() => setTab("gadgets")} style={s.circle} accessibilityLabel="My gadgets">
                   <Feather name="smartphone" size={20} color="#000" />
-                </View>
+                </Pressable>
                 <Text style={s.title}>FixByte AI</Text>
-                {/* ponytail: initial-letter avatar; swap for a profile photo via <Image> when there's one */}
-                <View style={[s.circle, s.avatar]}>
-                  <Text style={s.avatarText}>K</Text>
-                </View>
+                {/* ponytail: initial-letter avatar (from the profile name); swap for a photo via <Image> when there's one */}
+                <Pressable onPress={() => setTab("profile")} style={[s.circle, s.avatar]} accessibilityLabel="Profile">
+                  <Text style={s.avatarText}>{(settings.name.trim()[0] ?? "?").toUpperCase()}</Text>
+                </Pressable>
               </View>
               <View style={s.home}>
                 <Logo />
-                <Text style={s.greeting}>{greeting()}, Khyel</Text>
+                <Text style={s.greeting}>
+                  {greeting()}, {settings.name.trim().split(/\s+/)[0] || "there"}
+                </Text>
                 <View style={s.cards}>
                   <Card icon="camera" title="Scan a photo" subtitle="AI spots the damage" onPress={scan} />
                   <Card icon="message-square" title="Describe it" subtitle="Type the symptoms" onPress={() => input.current?.focus()} />
@@ -519,6 +578,9 @@ export default function App() {
           )}
         </KeyboardAvoidingView>
       )}
+      {/* One bar for all three tabs, so its pill can morph from tab to tab instead of being redrawn. */}
+      {welcomed && tab !== "home" && <TabBar active={tab} onTab={setTab} />}
+      {start && <StartPage onDone={() => setStart(false)} />}
     </SafeAreaView>
   );
 }
@@ -574,6 +636,872 @@ function DotGlow() {
       {GLOW_DOTS.map((p, i) => (
         <Circle key={i} cx={p.x} cy={p.y} r={1.5} fill="#000" opacity={p.o} />
       ))}
+    </Svg>
+  );
+}
+
+// Start page: the logo on white while the app loads, then a short fade into Home.
+// Without onDone it just holds (shown while fonts load); with it, it fades out and calls onDone.
+const START_MS = 900; // how long the logo stays before fading
+function StartPage({ onDone }: { onDone?: () => void }) {
+  const fade = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    if (!onDone) return;
+    const anim = Animated.sequence([
+      Animated.delay(START_MS),
+      Animated.timing(fade, { toValue: 0, duration: 350, easing: Easing.out(Easing.quad), useNativeDriver: NATIVE }),
+    ]);
+    anim.start(({ finished }) => finished && onDone());
+    return () => anim.stop();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- runs once; onDone only clears state
+  return (
+    <Animated.View style={[s.start, { opacity: fade }]} accessibilityLabel="FixByte AI">
+      <View style={s.startLogo}>
+        <Logo />
+      </View>
+    </Animated.View>
+  );
+}
+
+// Welcome page: shown after the start page until the user gets through Sign in or Create account
+// (remembered on the device). "Get started" opens Create account; "I already have an account" opens Sign in.
+const WELCOMED = "signed-in"; // renaming this shows Welcome and Sign in again on every device
+function Welcome({ onStart, onSignIn }: { onStart: () => void; onSignIn: () => void }) {
+  return (
+    <View style={s.welcome}>
+      <View style={s.welcomeTop}>
+        <View style={s.startLogo}>
+          <Logo />
+        </View>
+      </View>
+      <Text style={s.welcomeTitle}>Know what’s broken</Text>
+      <Text style={s.welcomeSub}>before you pay to fix it.</Text>
+      <Text style={s.welcomeBody}>
+        {"Snap a photo or describe the symptoms.\n"}
+        FixByte AI finds the likely problem and shows you how to fix it safely.
+      </Text>
+      <View style={s.welcomeGap} />
+      <Pressable onPress={onStart} style={s.welcomeBtn} accessibilityRole="button">
+        <Text style={s.welcomeBtnText}>Get started</Text>
+      </Pressable>
+      <Pressable onPress={onSignIn} hitSlop={10} accessibilityRole="button">
+        <Text style={s.welcomeLink}>I already have an account</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+// My gadgets: the user's devices, with search and type filters, plus the bottom tab bar.
+// ponytail: shows the mockup's sample gadgets; registering and saving gadgets isn't built yet, so the + and
+// "Register a gadget" buttons do nothing.
+type Gadget = { id: string; name: string; type: "phone" | "laptop"; issue: string; checks: number; last: string; status: string };
+const SAMPLE_GADGETS: Gadget[] = [
+  { id: "1", name: "iPhone 13", type: "phone", issue: "Screen flicker after a drop", checks: 4, last: "Sep 18", status: "Fixed" },
+  { id: "2", name: "iPhone 14", type: "phone", issue: "Screen flicker after a drop", checks: 4, last: "Sep 18", status: "Fixed" },
+];
+const GADGET_FILTERS = [
+  { label: "All", type: null },
+  { label: "Phones", type: "phone" },
+  { label: "Laptops", type: "laptop" },
+] as const;
+
+function Gadgets() {
+  const [query, setQuery] = useState("");
+  const [type, setType] = useState<Gadget["type"] | null>(null);
+  const q = query.trim().toLowerCase();
+  const shown = SAMPLE_GADGETS.filter(
+    (g) => (!type || g.type === type) && (!q || `${g.name} ${g.issue}`.toLowerCase().includes(q)),
+  );
+
+  return (
+    <View style={s.flex}>
+      <View style={s.gHeader}>
+        <View>
+          <Text style={s.gTitle}>My gadgets</Text>
+          <Text style={s.gCount}>{SAMPLE_GADGETS.length} registered</Text>
+        </View>
+        <Pressable style={[s.circle, s.gAdd]} accessibilityLabel="Register a gadget">
+          <Feather name="plus" size={22} color={GREEN} />
+        </Pressable>
+      </View>
+
+      <ScrollView style={s.flex} contentContainerStyle={s.gList} keyboardShouldPersistTaps="handled">
+        <View style={s.gSearch}>
+          <Feather name="search" size={19} color="#000" />
+          <TextInput
+            value={query}
+            onChangeText={setQuery}
+            placeholder="Search your gadgets"
+            placeholderTextColor="rgba(0,0,0,0.2)"
+            accessibilityLabel="Search your gadgets"
+            style={s.gSearchInput}
+          />
+        </View>
+
+        <View style={s.gFilters}>
+          {GADGET_FILTERS.map((f) => {
+            const on = type === f.type;
+            return (
+              <Pressable key={f.label} onPress={() => setType(f.type)} style={[s.gChip, on && s.filterOn]} accessibilityState={{ selected: on }}>
+                <Text style={[s.gChipText, on && s.tagTextLight]}>{f.label}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+
+        {shown.map((g) => (
+          <View key={g.id} style={s.gCard}>
+            <View style={s.gIcon}>
+              <Feather name={g.type === "laptop" ? "monitor" : "smartphone"} size={22} color="#fff" />
+            </View>
+            <View style={s.gText}>
+              <Text style={s.gName} numberOfLines={1}>
+                {g.name}
+              </Text>
+              <Text style={s.gIssue} numberOfLines={1}>
+                {g.issue}
+              </Text>
+              <Text style={s.gMeta}>
+                {g.checks} CHECKS · LAST {g.last.toUpperCase()}
+              </Text>
+            </View>
+            <View style={s.gStatus}>
+              <Feather name="check" size={11} color="#000" />
+              <Text style={s.gStatusText}>{g.status}</Text>
+            </View>
+          </View>
+        ))}
+        {!shown.length && <Text style={[s.msgText, s.dim, s.gEmpty]}>No gadgets match.</Text>}
+
+        <Pressable style={s.gRegister} accessibilityRole="button">
+          <Feather name="plus" size={20} color="#000" />
+          <Text style={s.gRegisterText}>Register a gadget</Text>
+        </Pressable>
+      </ScrollView>
+
+    </View>
+  );
+}
+
+// Bottom bar: Home on its own, then a black pill with My gadgets, History and Profile; the current one is white.
+type Tab = "home" | "gadgets" | "history" | "profile";
+const TABS: { tab: Tab; icon: FeatherName; label: string }[] = [
+  { tab: "gadgets", icon: "smartphone", label: "My gadgets" },
+  { tab: "history", icon: "clock", label: "History" },
+  { tab: "profile", icon: "user", label: "Profile" },
+];
+
+const PILL_W = 88; // the white pill's width, from the mockup
+
+// The white pill morphs between tabs: the edge facing the new tab springs out first and the trailing edge
+// follows more slowly, so it stretches toward the tab, then settles to its size there.
+function TabBar({ active, onTab }: { active: Tab; onTab: (t: Tab) => void }) {
+  const [w, setW] = useState(0); // the black pill's width
+  const left = useRef(new Animated.Value(0)).current;
+  const right = useRef(new Animated.Value(0)).current;
+  const placed = useRef(-1); // tab index the pill sits at; -1 until first laid out
+  const i = TABS.findIndex((t) => t.tab === active);
+
+  useEffect(() => {
+    if (!w) return;
+    const slot = (w - 14) / TABS.length; // three equal slots inside the 7pt padding
+    const l = 7 + i * slot + (slot - PILL_W) / 2;
+    if (placed.current < 0) {
+      left.setValue(l);
+      right.setValue(l + PILL_W);
+    } else if (placed.current !== i) {
+      const forward = i > placed.current;
+      const lead = { tension: 220, friction: 20 };
+      const trail = { tension: 90, friction: 14 };
+      // Layout props (left, width) can't use the native driver.
+      Animated.parallel([
+        Animated.spring(left, { toValue: l, ...(forward ? trail : lead), useNativeDriver: false }),
+        Animated.spring(right, { toValue: l + PILL_W, ...(forward ? lead : trail), useNativeDriver: false }),
+      ]).start();
+    }
+    placed.current = i;
+  }, [w, i, left, right]);
+
+  return (
+    <View style={s.tabBar}>
+      <Pressable onPress={() => onTab("home")} style={s.tabHome} accessibilityLabel="Home">
+        <Feather name="home" size={22} color="#000" />
+      </Pressable>
+      <View style={s.tabPill} onLayout={(e) => setW(e.nativeEvent.layout.width)}>
+        {w > 0 && <Animated.View style={[s.tabMorph, { left, width: Animated.subtract(right, left) }]} />}
+        {TABS.map(({ tab, icon, label }) => {
+          const on = tab === active;
+          return (
+            <Pressable key={label} onPress={() => onTab(tab)} style={s.tabItem} accessibilityLabel={label} accessibilityState={{ selected: on }}>
+              <Feather name={icon} size={22} color={on ? "#000" : "#fff"} />
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+// Profile and settings, kept on the device. Erase data (Password and security) puts back these defaults.
+type Settings = { name: string; email: string; reminders: boolean; language: string; region: string };
+const SETTINGS_KEY = "settings";
+const DEFAULT_SETTINGS: Settings = {
+  name: "Khyel Calanuga",
+  email: "contact@khyelcalanuga.dev",
+  reminders: true,
+  language: "English",
+  region: "Metro Manila",
+};
+function loadSettings(): Settings {
+  try {
+    return { ...DEFAULT_SETTINGS, ...JSON.parse(load(SETTINGS_KEY) ?? "{}") };
+  } catch {
+    return DEFAULT_SETTINGS;
+  }
+}
+// Language sets the language the AI replies in (the app's own labels stay English).
+const LANGUAGES = ["English", "Filipino", "Cebuano", "Spanish", "Japanese"];
+// Region is where shop search looks when location is off.
+const REGIONS = ["Metro Manila", "Cebu City", "Davao City", "Baguio", "Iloilo City", "Cagayan de Oro"];
+const SUPPORT_EMAIL = "contact@khyelcalanuga.dev";
+const VERSION = Constants.expoConfig?.version ?? "1.0";
+
+type Doc = { heading: string; body: string }[];
+const HELP: Doc = [
+  { heading: "How does FixByte AI diagnose a problem?", body: "Send a photo or describe what happened. The AI asks 1-3 quick questions, then gives the likely cause, how hard the fix is, and step-by-step repair guidance." },
+  { heading: "Is the diagnosis always right?", body: "No. It's a best guess from what you share. For anything risky, like a swollen battery, mains power or water damage, stop and see a professional." },
+  { heading: "Why is there a daily limit?", body: `You get ${DAILY_LIMIT} free diagnoses a day. The count resets at midnight.` },
+  { heading: "How are repair shops found?", body: "From OpenStreetMap, within 8 km of you, or of your Region when location is off. Opening hours and phone numbers come from OpenStreetMap and can be missing or out of date." },
+  { heading: "What do repair reminders do?", body: "Two days after a diagnosis, your phone reminds you to check how the repair went. Turn them off anytime with the Repair reminders switch." },
+  { heading: "What does Language change?", body: "The language the AI writes its answers in. The app's own buttons and labels stay in English." },
+];
+const PRIVACY: Doc = [
+  { heading: "What you send", body: "Photos and descriptions you send go through FixByte's server to an AI provider (Google Gemini, Groq, Mistral or OpenRouter) to produce your diagnosis. FixByte's server doesn't keep them; each provider handles them under its own privacy policy." },
+  { heading: "Your location", body: "Used only to find nearby repair shops and directions. Shop searches go through FixByte's server to OpenStreetMap services, and directions come from OpenStreetMap's routing service. Your location isn't stored." },
+  { heading: "On your device", body: "Your name, email, settings and daily diagnosis count are saved on this device only. Erase them anytime under Password and security." },
+  { heading: "What we don't do", body: "No ads, no tracking, and your data isn't sold." },
+  { heading: "Contact", body: `Questions about your privacy: ${SUPPORT_EMAIL}` },
+];
+const TERMS: Doc = [
+  { heading: "Guidance only", body: "FixByte AI gives repair guidance based on what you share. It can't inspect your device in person and can be wrong." },
+  { heading: "Your safety", body: "Follow the warnings in each repair guide. Stop and see a professional for swollen batteries, mains power, water damage, or anything you're unsure about." },
+  { heading: "Your responsibility", body: "You decide whether to attempt a repair. FixByte AI isn't responsible for damage, data loss or injury from repairs you carry out." },
+  { heading: "Fair use", body: `The free plan includes ${DAILY_LIMIT} diagnoses a day. Don't misuse the service or try to get around the limit.` },
+  { heading: "Changes", body: "These terms may change as the app grows. The latest version is always here." },
+];
+
+type ProfilePage = "edit" | "language" | "region" | "security" | "help" | "privacy" | "terms" | "about";
+type Row = { icon: FeatherName; label: string; value?: string; onPress: () => void };
+
+// Profile: who's signed in, totals from the gadgets and history, settings and support pages.
+function Profile({
+  settings,
+  onChange,
+  onSignOut,
+  onErase,
+}: {
+  settings: Settings;
+  onChange: (patch: Partial<Settings>) => void;
+  onSignOut: () => void;
+  onErase: () => void;
+}) {
+  const [page, setPage] = useState<ProfilePage | null>(null);
+  const [note, setNote] = useState("");
+  const [confirmErase, setConfirmErase] = useState(false);
+  const back = () => {
+    setPage(null);
+    setConfirmErase(false);
+  };
+  const stats = [
+    { n: SAMPLE_GADGETS.length, label: "Gadgets" },
+    { n: SAMPLE_HISTORY.length, label: "Checks" },
+    { n: SAMPLE_HISTORY.filter((c) => c.status === "fixed").length, label: "Fixed Yourself" },
+  ];
+
+  async function setReminders(on: boolean) {
+    setNote("");
+    onChange({ reminders: on });
+    if (!on) return cancelReminders();
+    if (!(await allowReminders())) {
+      setNote(
+        Platform.OS === "web"
+          ? "Reminders show up in the phone app, not in the browser."
+          : "Allow notifications for FixByte AI in your phone's settings to get reminders.",
+      );
+    }
+  }
+
+  function feedback() {
+    const url = `mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent(`FixByte AI feedback (v${VERSION})`)}`;
+    Linking.openURL(url).catch(() => setNote(`No email app found. Send feedback to ${SUPPORT_EMAIL}.`));
+  }
+
+  if (page === "edit") {
+    return (
+      <SubPage title="Edit profile" onBack={back}>
+        <EditProfile
+          settings={settings}
+          onSave={(patch) => {
+            onChange(patch);
+            back();
+          }}
+        />
+      </SubPage>
+    );
+  }
+  if (page === "language" || page === "region") {
+    const key = page;
+    return (
+      <SubPage title={page === "language" ? "Language" : "Region"} onBack={back}>
+        <Text style={[s.msgText, s.dim, s.pHint]}>
+          {page === "language"
+            ? "The language FixByte AI writes its answers in."
+            : "Where repair-shop search looks when location is off."}
+        </Text>
+        <View style={s.pSettings}>
+          {(page === "language" ? LANGUAGES : REGIONS).map((o) => {
+            const on = settings[key] === o;
+            return (
+              <Pressable
+                key={o}
+                onPress={() => {
+                  onChange({ [key]: o });
+                  back();
+                }}
+                style={s.pRow}
+                accessibilityRole="radio"
+                accessibilityState={{ checked: on }}
+              >
+                <Text style={s.pRowLabel}>{o}</Text>
+                {on && <Feather name="check" size={18} color="#000" />}
+              </Pressable>
+            );
+          })}
+        </View>
+      </SubPage>
+    );
+  }
+  if (page === "security") {
+    return (
+      <SubPage title="Password and security" onBack={back}>
+        <View style={[s.pSettings, s.pDoc]}>
+          <Text style={s.pDocHeading}>Password</Text>
+          <Text style={s.pDocBody}>
+            Sign-in isn't connected to a server yet, so there's no password to change. Passwords will be managed here once
+            accounts are live.
+          </Text>
+        </View>
+        <Pressable onPress={onSignOut} style={[s.googleBtn, s.pSignOut]} accessibilityRole="button">
+          <Feather name="log-out" size={18} color="#000" />
+          <Text style={s.googleText}>Sign out</Text>
+        </Pressable>
+        {/* Two taps instead of a dialog: Alert has no buttons on web. */}
+        <Pressable
+          onPress={() => (confirmErase ? onErase() : setConfirmErase(true))}
+          style={[s.googleBtn, s.pSignOut]}
+          accessibilityRole="button"
+        >
+          <Feather name="trash-2" size={18} color="#dc2626" />
+          <Text style={[s.googleText, s.pSignOutText]}>{confirmErase ? "Tap again to erase" : "Erase data on this device"}</Text>
+        </Pressable>
+        <Text style={[s.msgText, s.dim, s.pHint]}>
+          Erasing removes your name, email, settings and daily count from this device and signs you out.
+        </Text>
+      </SubPage>
+    );
+  }
+  if (page === "help" || page === "privacy" || page === "terms") {
+    const doc = page === "help" ? HELP : page === "privacy" ? PRIVACY : TERMS;
+    return (
+      <SubPage title={page === "help" ? "Help & FAQ" : page === "privacy" ? "Privacy policy" : "Terms of service"} onBack={back}>
+        <View style={[s.pSettings, s.pDoc]}>
+          {doc.map((d) => (
+            <View key={d.heading} style={s.pDocItem}>
+              <Text style={s.pDocHeading}>{d.heading}</Text>
+              <Text style={s.pDocBody}>{d.body}</Text>
+            </View>
+          ))}
+        </View>
+      </SubPage>
+    );
+  }
+  if (page === "about") {
+    return (
+      <SubPage title="About" onBack={back}>
+        <View style={[s.pSettings, s.pAbout]}>
+          <Logo />
+          <Text style={[s.pName, s.pAboutName]}>FixByte AI</Text>
+          <Text style={s.pDocBody}>Version {VERSION}</Text>
+          <Text style={[s.pDocBody, s.pAboutText]}>
+            An AI tech-repair assistant. Diagnose a device from a photo or description, follow a repair guide, or find a
+            nearby repair shop.
+          </Text>
+        </View>
+        <View style={[s.pSettings, s.pDoc]}>
+          <Text style={s.pDocHeading}>Credits</Text>
+          <Text style={s.pDocBody}>
+            Maps © OpenStreetMap contributors, tiles by Esri. Directions by OpenStreetMap routing (FOSSGIS). AI by Google
+            Gemini, Groq, Mistral and OpenRouter.
+          </Text>
+        </View>
+      </SubPage>
+    );
+  }
+
+  const settingRows: Row[] = [
+    { icon: "globe", label: "Language", value: settings.language, onPress: () => setPage("language") },
+    { icon: "map-pin", label: "Region", value: settings.region, onPress: () => setPage("region") },
+    { icon: "lock", label: "Password and security", onPress: () => setPage("security") },
+  ];
+  const supportRows: Row[] = [
+    { icon: "help-circle", label: "Help & FAQ", onPress: () => setPage("help") },
+    { icon: "message-square", label: "Send feedback", onPress: feedback },
+    { icon: "shield", label: "Privacy policy", onPress: () => setPage("privacy") },
+    { icon: "file-text", label: "Terms of service", onPress: () => setPage("terms") },
+    { icon: "info", label: "About", value: `Version ${VERSION}`, onPress: () => setPage("about") },
+  ];
+
+  return (
+    <View style={s.flex}>
+      <ScrollView style={s.flex} contentContainerStyle={[s.gList, s.pPage]}>
+        <Text style={[s.gTitle, s.pTitle]}>Profile</Text>
+
+        <View style={s.pCard}>
+          <View style={[s.pAvatar, s.pAvatarCenter]}>
+            <Text style={s.pAvatarText}>{(settings.name.trim()[0] ?? "?").toUpperCase()}</Text>
+          </View>
+          <View style={s.gText}>
+            <Text style={s.pName} numberOfLines={1}>
+              {settings.name}
+            </Text>
+            <Text style={s.pEmail} numberOfLines={1}>
+              {settings.email}
+            </Text>
+          </View>
+          <Pressable onPress={() => setPage("edit")} style={s.pEdit} hitSlop={8} accessibilityLabel="Edit profile">
+            <Feather name="edit-2" size={19} color="#000" />
+          </Pressable>
+        </View>
+
+        <View style={s.pStats}>
+          {stats.map((st) => (
+            <View key={st.label} style={s.pStat}>
+              <Text style={s.pStatNum}>{st.n}</Text>
+              <Text style={s.pStatLabel}>{st.label}</Text>
+            </View>
+          ))}
+        </View>
+
+        <View style={s.pSettings}>
+          <View style={s.pRow}>
+            <Feather name="bell" size={18} color="#000" />
+            <Text style={s.pRowLabel}>Repair reminders</Text>
+            <Toggle on={settings.reminders} onChange={setReminders} label="Repair reminders" />
+          </View>
+          {settingRows.map((row) => (
+            <SettingRow key={row.label} {...row} />
+          ))}
+        </View>
+        {!!note && <Text style={[s.msgText, s.dim, s.pHint]}>{note}</Text>}
+
+        <View style={s.pSettings}>
+          {supportRows.map((row) => (
+            <SettingRow key={row.label} {...row} />
+          ))}
+        </View>
+
+        <Pressable onPress={onSignOut} style={[s.googleBtn, s.pSignOut]} accessibilityRole="button">
+          <Feather name="log-out" size={18} color="#dc2626" />
+          <Text style={[s.googleText, s.pSignOutText]}>Sign out</Text>
+        </Pressable>
+      </ScrollView>
+    </View>
+  );
+}
+
+// A Profile sub-page: back button and title over scrolling content (the tab bar stays below).
+function SubPage({ title, onBack, children }: { title: string; onBack: () => void; children: ReactNode }) {
+  return (
+    <View style={s.flex}>
+      <View style={s.header}>
+        <Pressable onPress={onBack} style={s.circle} accessibilityLabel="Back">
+          <Feather name="arrow-left" size={20} color="#000" />
+        </Pressable>
+        <Text style={s.title}>{title}</Text>
+        <View style={s.headerSpacer} />
+      </View>
+      <ScrollView style={s.flex} contentContainerStyle={s.gList} keyboardShouldPersistTaps="handled">
+        {children}
+      </ScrollView>
+    </View>
+  );
+}
+
+function EditProfile({ settings, onSave }: { settings: Settings; onSave: (patch: Pick<Settings, "name" | "email">) => void }) {
+  const [name, setName] = useState(settings.name);
+  const [email, setEmail] = useState(settings.email);
+  const [error, setError] = useState("");
+  function save() {
+    if (!name.trim()) return setError("Enter your name.");
+    if (!/^\S+@\S+\.\S+$/.test(email.trim())) return setError("Enter a valid email address.");
+    onSave({ name: name.trim(), email: email.trim() });
+  }
+  return (
+    <>
+      <Field label="Name" value={name} onChangeText={setName} placeholder="Your name" autoComplete="name" textContentType="name" />
+      <Field
+        label="Email"
+        value={email}
+        onChangeText={setEmail}
+        placeholder="you@example.com"
+        keyboardType="email-address"
+        autoCapitalize="none"
+        autoComplete="email"
+        textContentType="emailAddress"
+        onSubmitEditing={save}
+      />
+      {!!error && <Text style={s.error}>{error}</Text>}
+      <Pressable onPress={save} style={[s.welcomeBtn, s.authBtn]} accessibilityRole="button">
+        <Text style={s.welcomeBtnText}>Save</Text>
+      </Pressable>
+    </>
+  );
+}
+
+function SettingRow({ icon, label, value, onPress }: Row) {
+  return (
+    <Pressable onPress={onPress} style={s.pRow} accessibilityRole="button">
+      <Feather name={icon} size={18} color="#000" />
+      <Text style={s.pRowLabel}>{label}</Text>
+      {value && <Text style={s.pRowValue}>{value}</Text>}
+      <Feather name="chevron-right" size={16} color="rgba(0,0,0,0.6)" />
+    </Pressable>
+  );
+}
+
+// On/off switch drawn to the mockup (dark when on), with the knob sliding across.
+function Toggle({ on, onChange, label }: { on: boolean; onChange: (on: boolean) => void; label: string }) {
+  const v = useRef(new Animated.Value(on ? 1 : 0)).current;
+  useEffect(() => {
+    // Not the native driver: it can't animate the background colour.
+    Animated.spring(v, { toValue: on ? 1 : 0, friction: 7, tension: 120, useNativeDriver: false }).start();
+  }, [on, v]);
+  return (
+    <RNPressable onPress={() => onChange(!on)} hitSlop={8} accessibilityRole="switch" accessibilityState={{ checked: on }} accessibilityLabel={label}>
+      <Animated.View style={[s.toggle, { backgroundColor: v.interpolate({ inputRange: [0, 1], outputRange: ["#CFCFCF", "#2D2D2D"] }) }]}>
+        <Animated.View style={[s.knob, { transform: [{ translateX: v.interpolate({ inputRange: [0, 1], outputRange: [0, 16] }) }] }]} />
+      </Animated.View>
+    </RNPressable>
+  );
+}
+
+// History: a month calendar marking each day's checks for one gadget, and the list of those checks.
+// ponytail: sample history from the mockup, matching the sample gadgets; nothing is recorded from real diagnoses yet.
+type CheckStatus = "fixed" | "checked" | "pro";
+type Check = { gadget: string; date: string; title: string; detail: string; status: CheckStatus }; // date: YYYY-MM-DD
+const SAMPLE_HISTORY: Check[] = [
+  { gadget: "1", date: "2026-09-04", title: "Battery drains overnight", detail: "Background app refresh", status: "fixed" },
+  { gadget: "1", date: "2026-09-11", title: "Screen flicker after a drop", detail: "Loose display connector", status: "fixed" },
+  { gadget: "1", date: "2026-09-15", title: "Speaker crackles", detail: "Dust in the speaker grille", status: "checked" },
+  { gadget: "1", date: "2026-09-18", title: "Screen flicker after a drop", detail: "Display connector re-seated", status: "fixed" },
+  { gadget: "1", date: "2026-09-21", title: "Cracked back glass", detail: "Needs a repair shop", status: "pro" },
+  { gadget: "2", date: "2026-09-18", title: "Screen flicker after a drop", detail: "Loose display connector", status: "fixed" },
+];
+const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const WEEKDAYS = ["S", "M", "T", "W", "TH", "F", "S"];
+const LEGEND: { status: CheckStatus; label: string }[] = [
+  { status: "fixed", label: "Fixed" },
+  { status: "checked", label: "Checked" },
+  { status: "pro", label: "Needs a pro" },
+];
+const ymd = (y: number, m: number, d: number) => `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+
+function StatusDot({ status, big }: { status: CheckStatus; big?: boolean }) {
+  return <View style={[s.dot, big && s.dotBig, status === "fixed" ? s.dotFixed : status === "checked" ? s.dotChecked : s.dotPro]} />;
+}
+
+function History() {
+  const [gadget, setGadget] = useState(SAMPLE_GADGETS[0]);
+  const [picking, setPicking] = useState(false);
+  const checks = SAMPLE_HISTORY.filter((c) => c.gadget === gadget.id).sort((a, b) => a.date.localeCompare(b.date));
+  // Opens on the month of the gadget's latest check (or this month when it has none).
+  const opening = () => {
+    const last = checks[checks.length - 1]?.date;
+    const d = last ? new Date(`${last}T00:00:00`) : new Date();
+    return { y: d.getFullYear(), m: d.getMonth() };
+  };
+  const [view, setView] = useState(opening);
+  const [day, setDay] = useState<number | null>(null); // selected day; null shows the whole month
+
+  const now = new Date();
+  const today = ymd(now.getFullYear(), now.getMonth(), now.getDate());
+  const prefix = ymd(view.y, view.m, 1).slice(0, 8); // "YYYY-MM-"
+  const monthChecks = checks.filter((c) => c.date.startsWith(prefix));
+  const byDay = new Map(monthChecks.map((c) => [Number(c.date.slice(8)), c.status])); // later checks win
+  const shown = day === null ? monthChecks : monthChecks.filter((c) => Number(c.date.slice(8)) === day);
+
+  // Weeks of 7 cells, blank before the 1st and after the last day.
+  const cells: (number | null)[] = [
+    ...Array(new Date(view.y, view.m, 1).getDay()).fill(null),
+    ...Array.from({ length: new Date(view.y, view.m + 1, 0).getDate() }, (_, i) => i + 1),
+  ];
+  while (cells.length % 7) cells.push(null);
+  const weeks = Array.from({ length: cells.length / 7 }, (_, w) => cells.slice(w * 7, w * 7 + 7));
+
+  const move = (delta: number) => {
+    const d = new Date(view.y, view.m + delta, 1);
+    setView({ y: d.getFullYear(), m: d.getMonth() });
+    setDay(null);
+  };
+  const pick = (g: Gadget) => {
+    setGadget(g);
+    setPicking(false);
+    setDay(null);
+    const last = SAMPLE_HISTORY.filter((c) => c.gadget === g.id).map((c) => c.date).sort().pop();
+    const d = last ? new Date(`${last}T00:00:00`) : new Date();
+    setView({ y: d.getFullYear(), m: d.getMonth() });
+  };
+  const thisMonth = view.y === now.getFullYear() && view.m === now.getMonth();
+  const label = day !== null ? `${MONTHS[view.m].slice(0, 3)} ${day}` : thisMonth ? "This month" : `${MONTHS[view.m]} ${view.y}`;
+
+  return (
+    <View style={s.flex}>
+      <View style={s.gHeader}>
+        <View>
+          <Text style={s.gTitle}>History</Text>
+          <Text style={s.gCount}>Every check and fix, by date</Text>
+        </View>
+        <Pressable onPress={() => setPicking((o) => !o)} style={s.hPicker} accessibilityLabel={`Gadget: ${gadget.name}`} accessibilityState={{ expanded: picking }}>
+          <Text style={s.hPickerText}>{gadget.name}</Text>
+          <Feather name={picking ? "chevron-up" : "chevron-down"} size={18} color="#000" />
+        </Pressable>
+      </View>
+
+      <ScrollView style={s.flex} contentContainerStyle={s.gList}>
+        <View style={s.hCal}>
+          <View style={s.hMonthRow}>
+            <Text style={s.hMonth}>
+              {MONTHS[view.m]} {view.y}
+            </Text>
+            <Pressable onPress={() => move(-1)} hitSlop={10} accessibilityLabel="Previous month">
+              <Feather name="chevron-left" size={20} color="#000" />
+            </Pressable>
+            <Pressable onPress={() => move(1)} hitSlop={10} style={s.hNext} accessibilityLabel="Next month">
+              <Feather name="chevron-right" size={20} color="#000" />
+            </Pressable>
+          </View>
+
+          <View style={s.hWeek}>
+            {WEEKDAYS.map((w, i) => (
+              <Text key={i} style={[s.hCell, s.hWeekday]}>
+                {w}
+              </Text>
+            ))}
+          </View>
+          {weeks.map((week, wi) => (
+            <View key={wi} style={s.hWeek}>
+              {week.map((d, i) => {
+                if (d === null) return <View key={i} style={s.hCell} />;
+                const status = byDay.get(d);
+                const selected = d === day;
+                const isToday = ymd(view.y, view.m, d) === today;
+                return (
+                  <Pressable
+                    key={i}
+                    onPress={() => setDay(selected ? null : d)}
+                    style={s.hCell}
+                    accessibilityLabel={`${MONTHS[view.m]} ${d}${status ? `, ${LEGEND.find((l) => l.status === status)!.label}` : ""}`}
+                    accessibilityState={{ selected }}
+                  >
+                    <View style={[s.hDay, isToday && s.hToday, selected && s.hSelected]}>
+                      <Text style={[s.hDayText, selected && s.tagTextLight]}>{d}</Text>
+                    </View>
+                    {status && (
+                      <View style={s.hDayDot}>
+                        <StatusDot status={status} />
+                      </View>
+                    )}
+                  </Pressable>
+                );
+              })}
+            </View>
+          ))}
+
+          <View style={s.hLegend}>
+            {LEGEND.map((l) => (
+              <View key={l.status} style={s.hLegendItem}>
+                <StatusDot status={l.status} />
+                <Text style={s.hLegendText}>{l.label}</Text>
+              </View>
+            ))}
+          </View>
+        </View>
+
+        <Text style={[s.monoLabel, s.hSection]}>
+          {gadget.name.toUpperCase()} · {label.toUpperCase()}
+        </Text>
+        {shown.map((c) => (
+          <View key={c.date + c.title} style={s.hEntry}>
+            <View style={s.hDate}>
+              <Text style={s.hDateMonth}>{MONTHS[Number(c.date.slice(5, 7)) - 1].slice(0, 3).toUpperCase()}</Text>
+              <Text style={s.hDateDay}>{Number(c.date.slice(8))}</Text>
+            </View>
+            <View style={s.gText}>
+              <Text style={s.gName} numberOfLines={1}>
+                {c.title}
+              </Text>
+              <Text style={s.gIssue} numberOfLines={1}>
+                {c.detail}
+              </Text>
+            </View>
+            <StatusDot status={c.status} big />
+          </View>
+        ))}
+        {!shown.length && <Text style={[s.msgText, s.dim, s.gEmpty]}>No checks {day !== null ? "on this day" : "this month"}.</Text>}
+      </ScrollView>
+
+      {/* Over the page, under the gadget button; a child of this full-page view so Android delivers its taps. */}
+      {picking && (
+        <Pop from="right" style={s.hMenu}>
+          {SAMPLE_GADGETS.map((g) => (
+            <Pressable key={g.id} onPress={() => pick(g)} style={s.attachItem} accessibilityRole="button">
+              <Feather name={g.type === "laptop" ? "monitor" : "smartphone"} size={17} color="#000" />
+              <Text style={s.attachText}>{g.name}</Text>
+            </Pressable>
+          ))}
+        </Pop>
+      )}
+
+    </View>
+  );
+}
+
+// Sign in and Create account: one page with a switch between the two, as in the mockups.
+// ponytail: there are no real accounts yet. Sign in, Sign up and Google all go straight to Home. Connect an auth
+// service (Supabase, Firebase) in submit() and the Google button when accounts are needed.
+type AuthMode = "signin" | "register";
+const AUTH_TEXT = {
+  signin: { title: "Welcome back", sub: "Sign in to check on your gadgets.", button: "Sign in" },
+  register: { title: "Create account", sub: "Register a new account to continue", button: "Sign up" },
+};
+
+function Auth({ initial, onBack, onDone }: { initial: AuthMode; onBack: () => void; onDone: () => void }) {
+  const [mode, setMode] = useState(initial);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
+  const [segW, setSegW] = useState(0);
+  const slide = useRef(new Animated.Value(initial === "register" ? 1 : 0)).current;
+  const register = mode === "register";
+  const t = AUTH_TEXT[mode];
+
+  function switchTo(m: AuthMode) {
+    setMode(m);
+    setMessage(null);
+    Animated.spring(slide, { toValue: m === "register" ? 1 : 0, friction: 8, tension: 90, useNativeDriver: NATIVE }).start();
+  }
+
+  // ponytail: not hooked up yet: Sign in and Sign up go straight to Home without checking the fields.
+  const submit = onDone;
+
+  // The black pill is half the switch's inner width (the switch has 7pt padding on each side).
+  const pillW = segW ? (segW - 14) / 2 : 0;
+  const pillX = slide.interpolate({ inputRange: [0, 1], outputRange: [0, pillW] });
+
+  return (
+    <KeyboardAvoidingView style={s.flex} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+      <View style={s.header}>
+        <Pressable onPress={onBack} style={s.circle} accessibilityLabel="Back">
+          <Feather name="arrow-left" size={20} color="#000" />
+        </Pressable>
+      </View>
+      <ScrollView contentContainerStyle={s.auth} keyboardShouldPersistTaps="handled">
+        <Text style={s.authTitle}>{t.title}</Text>
+        <Text style={s.authSub}>{t.sub}</Text>
+
+        <View style={s.seg} onLayout={(e) => setSegW(e.nativeEvent.layout.width)}>
+          {pillW > 0 && <Animated.View style={[s.segPill, { width: pillW, transform: [{ translateX: pillX }] }]} />}
+          {(["signin", "register"] as const).map((m) => (
+            <Pressable key={m} onPress={() => switchTo(m)} style={s.segItem} accessibilityRole="tab" accessibilityState={{ selected: mode === m }}>
+              <Text style={[s.segText, mode === m && s.segTextOn]}>{m === "signin" ? "Sign in" : "Create account"}</Text>
+            </Pressable>
+          ))}
+        </View>
+
+        <Field
+          label="Email"
+          value={email}
+          onChangeText={setEmail}
+          placeholder="contact@khyelcalanuga.dev"
+          keyboardType="email-address"
+          autoCapitalize="none"
+          autoComplete="email"
+          textContentType="emailAddress"
+        />
+        <Field
+          label="Password"
+          value={password}
+          onChangeText={setPassword}
+          placeholder="Enter your password"
+          secureTextEntry
+          autoComplete={register ? "new-password" : "current-password"}
+          textContentType={register ? "newPassword" : "password"}
+          onSubmitEditing={register ? undefined : submit}
+        />
+        {register ? (
+          <Field
+            label="Confirm Password"
+            value={confirm}
+            onChangeText={setConfirm}
+            placeholder="Confirm your password"
+            secureTextEntry
+            autoComplete="new-password"
+            textContentType="newPassword"
+            onSubmitEditing={submit}
+          />
+        ) : (
+          <Pressable onPress={() => setMessage({ text: "Password reset isn't available yet.", error: false })} style={s.forgot} hitSlop={8}>
+            <Text style={s.forgotText}>Forgot Password?</Text>
+          </Pressable>
+        )}
+
+        {message && <Text style={message.error ? s.error : s.authNote}>{message.text}</Text>}
+        <Pressable onPress={submit} style={[s.welcomeBtn, s.authBtn]} accessibilityRole="button">
+          <Text style={s.welcomeBtnText}>{t.button}</Text>
+        </Pressable>
+
+        <View style={s.divider}>
+          <View style={s.dividerLine} />
+          <Text style={s.dividerText}>or</Text>
+          <View style={s.dividerLine} />
+        </View>
+        <Pressable onPress={onDone} style={s.googleBtn} accessibilityRole="button" accessibilityLabel="Continue with Google">
+          <GoogleG />
+          <Text style={s.googleText}>Google</Text>
+        </Pressable>
+      </ScrollView>
+    </KeyboardAvoidingView>
+  );
+}
+
+function Field({ label, ...props }: { label: string } & ComponentProps<typeof TextInput>) {
+  return (
+    <>
+      <Text style={s.authLabel}>{label}</Text>
+      <TextInput placeholderTextColor="rgba(0,0,0,0.2)" accessibilityLabel={label} style={s.authInput} {...props} />
+    </>
+  );
+}
+
+// Google's four-colour "G".
+function GoogleG() {
+  return (
+    <Svg width={24} height={24} viewBox="0 0 48 48">
+      <Path fill="#FFC107" d="M43.611 20.083H42V20H24v8h11.303c-1.649 4.657-6.08 8-11.303 8-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 12.955 4 4 12.955 4 24s8.955 20 20 20 20-8.955 20-20c0-1.341-.138-2.65-.389-3.917z" />
+      <Path fill="#FF3D00" d="M6.306 14.691l6.571 4.819C14.655 15.108 18.961 12 24 12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 16.318 4 9.656 8.337 6.306 14.691z" />
+      <Path fill="#4CAF50" d="M24 44c5.166 0 9.86-1.977 13.409-5.192l-6.19-5.238A11.91 11.91 0 0 1 24 36c-5.202 0-9.619-3.317-11.283-7.946l-6.522 5.025C9.505 39.556 16.227 44 24 44z" />
+      <Path fill="#1976D2" d="M43.611 20.083H42V20H24v8h11.303a12.04 12.04 0 0 1-4.087 5.571l.003-.002 6.19 5.238C36.971 39.205 44 34 44 24c0-1.341-.138-2.65-.389-3.917z" />
     </Svg>
   );
 }
@@ -785,7 +1713,7 @@ function TileMap({ you, center, shops, route, onDrag }: { you?: Point; center: P
 
 const NEEDS = { "Pro repair": "Needs a pro", "Some skill": "Some skill", "Beginner-safe": "Beginner-safe" } as const;
 
-function Shops({ t, onBack }: { t: Extract<Turn, { role: "assistant" }>; onBack: () => void }) {
+function Shops({ t, region, onBack }: { t: Extract<Turn, { role: "assistant" }>; region: string; onBack: () => void }) {
   const d = t.diagnosis!;
   const [loc, setLoc] = useState<Point | null>(null);
   const [area, setArea] = useState<{ city?: string; region?: string }>({});
@@ -821,7 +1749,7 @@ function Shops({ t, onBack }: { t: Extract<Turn, { role: "assistant" }>; onBack:
     (async () => {
       try {
         const perm = await Location.requestForegroundPermissionsAsync();
-        if (!perm.granted) throw new Error("Location is off. Type a city above to search there.");
+        if (!perm.granted) throw new Error("Location is off.");
         // A recent last-known position is instant; a fresh GPS fix can take several seconds on a phone.
         const p =
           (await Location.getLastKnownPositionAsync({ maxAge: 10 * 60_000 }).catch(() => null)) ??
@@ -831,9 +1759,8 @@ function Shops({ t, onBack }: { t: Extract<Turn, { role: "assistant" }>; onBack:
         Location.reverseGeocodeAsync(p.coords)
           .then(([a]) => setArea({ city: a?.city ?? a?.subregion ?? undefined, region: a?.region ?? undefined }))
           .catch(() => {});
-      } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
-        setLoading(false);
+      } catch {
+        setNear(region); // no location: search the region from Profile instead (another city can be typed above)
       }
     })();
   }, []);
@@ -1500,6 +2427,125 @@ const s = StyleSheet.create({
   time: { fontFamily: "Poppins_400Regular", fontSize: 11, lineHeight: 16, textAlign: "center", color: "#000", marginTop: 4 },
 
   home: { flex: 1, justifyContent: "center", paddingHorizontal: 20 },
+  start: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, zIndex: 10, backgroundColor: "#fff", alignItems: "center", justifyContent: "center" },
+  startLogo: { transform: [{ scale: 1.8 }] },
+  // Welcome page, measured from the mockup. The logo area and the gap above the button split the spare
+  // height about 3.25 : 1, as in the mockup, so it scales to other screen heights.
+  welcome: { flex: 1, paddingHorizontal: 20, paddingBottom: 20 },
+  welcomeTop: { flex: 3.25, alignItems: "center", justifyContent: "center" },
+  welcomeTitle: { fontFamily: "Poppins_500Medium", fontSize: 32, lineHeight: 42, textAlign: "center", color: "#000" },
+  welcomeSub: { fontFamily: "Poppins_500Medium", fontSize: 20, lineHeight: 28, textAlign: "center", color: "#000" },
+  welcomeBody: { fontFamily: "Poppins_400Regular", fontSize: 15, lineHeight: 23, textAlign: "center", color: "#000", marginTop: 14, paddingHorizontal: 6 },
+  welcomeGap: { flex: 1 },
+  welcomeBtn: { height: 59, borderRadius: 100, backgroundColor: "#000", alignItems: "center", justifyContent: "center" },
+  welcomeBtnText: { fontFamily: "Poppins_600SemiBold", fontSize: 15, color: "#fff" },
+  // My gadgets and the tab bar, measured from the mockup.
+  gHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 20, paddingTop: 15 },
+  gTitle: { fontFamily: "Poppins_600SemiBold", fontSize: 20, lineHeight: 28, color: "#000" },
+  gCount: { fontFamily: "Poppins_400Regular", fontSize: 10, lineHeight: 15, color: "rgba(0,0,0,0.5)" },
+  gAdd: { backgroundColor: "#000" },
+  gList: { paddingHorizontal: 20, paddingTop: 15, paddingBottom: 20 },
+  gSearch: { flexDirection: "row", alignItems: "center", height: 58, paddingHorizontal: 20, borderRadius: 100, backgroundColor: "#fff", borderWidth: 1, borderColor: "rgba(0,0,0,0.05)" },
+  gSearchInput: { flex: 1, height: "100%", marginLeft: 15, fontFamily: "Poppins_400Regular", fontSize: 15, color: "#000" },
+  gFilters: { flexDirection: "row", gap: 10, marginTop: 10 },
+  gChip: { height: 40, paddingHorizontal: 20, borderRadius: 100, backgroundColor: "#fff", justifyContent: "center" },
+  gChipText: { fontFamily: "Poppins_400Regular", fontSize: 13, color: "#000" },
+  gCard: { flexDirection: "row", alignItems: "center", marginTop: 10, padding: 20, borderRadius: 25, backgroundColor: "#fff" },
+  gIcon: { width: 54, height: 54, borderRadius: 14, backgroundColor: "#000", alignItems: "center", justifyContent: "center" },
+  gText: { flex: 1, marginLeft: 10 },
+  gName: { fontFamily: "Poppins_500Medium", fontSize: 13, lineHeight: 19, color: "#000" },
+  gIssue: { fontFamily: "Poppins_400Regular", fontSize: 10, lineHeight: 15, color: "rgba(0,0,0,0.6)" },
+  gMeta: { fontFamily: "Poppins_400Regular", fontSize: 10, lineHeight: 15, color: "rgba(0,0,0,0.4)" },
+  gStatus: { alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 5, height: 20, paddingHorizontal: 10, borderRadius: 100, backgroundColor: GREEN },
+  gStatusText: { fontFamily: "Poppins_500Medium", fontSize: 10, color: "#000" },
+  gEmpty: { textAlign: "center", marginTop: 20 },
+  gRegister: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 12, height: 74, marginTop: 10, borderRadius: 25, borderWidth: 1, borderStyle: "dashed", borderColor: "rgba(0,0,0,0.2)" },
+  gRegisterText: { fontFamily: "Poppins_500Medium", fontSize: 13, color: "#000" },
+  tabBar: { flexDirection: "row", gap: 10, paddingHorizontal: 20, paddingBottom: 20, paddingTop: 8 },
+  tabHome: { width: 59, height: 59, borderRadius: 100, backgroundColor: "#fff", alignItems: "center", justifyContent: "center" },
+  tabPill: { flex: 1, flexDirection: "row", height: 59, padding: 7, borderRadius: 100, backgroundColor: "#000" },
+  tabMorph: { position: "absolute", top: 7, bottom: 7, borderRadius: 100, backgroundColor: "#fff" },
+  tabItem: { flex: 1, alignItems: "center", justifyContent: "center" },
+  // Profile, measured from the mockup.
+  pPage: { paddingTop: 0 },
+  pTitle: { textAlign: "center", marginTop: 26, marginBottom: 22 },
+  pCard: { flexDirection: "row", alignItems: "center", padding: 20, borderRadius: 25, backgroundColor: "#fff" },
+  pAvatar: { width: 63, height: 63, borderRadius: 32, backgroundColor: "#D9D9D9", marginRight: 5 },
+  pName: { fontFamily: "Poppins_600SemiBold", fontSize: 15, lineHeight: 22, color: "#000" },
+  pEdit: { padding: 7 },
+  pEmail: { fontFamily: "Poppins_400Regular", fontSize: 10, lineHeight: 15, color: "#000" },
+  pStats: { flexDirection: "row", gap: 10, marginTop: 10 },
+  pStat: { flex: 1, alignItems: "center", paddingTop: 18, paddingBottom: 20, borderRadius: 25, backgroundColor: "#fff" },
+  pStatNum: { fontFamily: "Poppins_500Medium", fontSize: 32, lineHeight: 42, color: "#000" },
+  pStatLabel: { fontFamily: "Poppins_400Regular", fontSize: 10, lineHeight: 15, color: "#000", marginTop: 2 },
+  pSettings: { marginTop: 10, paddingHorizontal: 20, paddingVertical: 14, borderRadius: 25, backgroundColor: "#fff" },
+  pRow: { flexDirection: "row", alignItems: "center", height: 46, gap: 12 },
+  pRowLabel: { flex: 1, fontFamily: "Poppins_400Regular", fontSize: 13, color: "#000" },
+  pRowValue: { fontFamily: "Poppins_400Regular", fontSize: 13, color: "rgba(0,0,0,0.45)" },
+  pSignOut: { marginTop: 10 },
+  pAvatarCenter: { alignItems: "center", justifyContent: "center" },
+  pAvatarText: { fontFamily: "Poppins_600SemiBold", fontSize: 24, color: "rgba(0,0,0,0.45)" },
+  pHint: { marginTop: 10, marginBottom: 4, paddingHorizontal: 6 },
+  pDoc: { paddingVertical: 20, gap: 4 },
+  pDocItem: { gap: 4, marginBottom: 12 },
+  pDocHeading: { fontFamily: "Poppins_500Medium", fontSize: 13, lineHeight: 20, color: "#000" },
+  pDocBody: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 20, color: "rgba(0,0,0,0.6)" },
+  pAbout: { alignItems: "center", paddingVertical: 28 },
+  pAboutName: { marginTop: 16 },
+  pAboutText: { textAlign: "center", marginTop: 8 },
+  pSignOutText: { color: "#dc2626" },
+  toggle: { width: 40, height: 24, borderRadius: 12, padding: 3 },
+  knob: { width: 18, height: 18, borderRadius: 9, backgroundColor: "#fff" },
+  // History, measured from the mockup.
+  hPicker: { flexDirection: "row", alignItems: "center", gap: 10, height: 45, paddingHorizontal: 20, borderRadius: 100, backgroundColor: "#fff" },
+  hPickerText: { fontFamily: "Poppins_500Medium", fontSize: 13, color: "#000" },
+  hMenu: { position: "absolute", right: 20, top: 70, zIndex: 5, padding: 6, borderRadius: 22, backgroundColor: "#fff", borderWidth: 1, borderColor: "rgba(0,0,0,0.07)" },
+  hCal: { padding: 20, borderRadius: 25, backgroundColor: "#fff" },
+  hMonthRow: { flexDirection: "row", alignItems: "center", marginBottom: 14 },
+  hMonth: { flex: 1, fontFamily: "Poppins_500Medium", fontSize: 13, color: "#000" },
+  hNext: { marginLeft: 22 },
+  hWeek: { flexDirection: "row" },
+  hCell: { flex: 1, height: 30, alignItems: "center", justifyContent: "center" },
+  hWeekday: { fontFamily: "Poppins_400Regular", fontSize: 10, lineHeight: 30, textAlign: "center", color: "rgba(0,0,0,0.4)" },
+  hDay: { width: 26, height: 26, borderRadius: 13, alignItems: "center", justifyContent: "center" },
+  hToday: { borderWidth: 1, borderColor: "#000" },
+  hSelected: { backgroundColor: "#000" },
+  hDayText: { fontFamily: "Poppins_400Regular", fontSize: 10, color: "#000" },
+  hDayDot: { position: "absolute", bottom: -6 }, // just under the 26pt day circle, as in the mockup
+  hLegend: { flexDirection: "row", justifyContent: "center", gap: 16, marginTop: 16 },
+  hLegendItem: { flexDirection: "row", alignItems: "center", gap: 6 },
+  hLegendText: { fontFamily: "Poppins_400Regular", fontSize: 10, color: "#000" },
+  dot: { width: 5, height: 5, borderRadius: 3 },
+  dotBig: { width: 8, height: 8, borderRadius: 4 },
+  dotFixed: { backgroundColor: GREEN },
+  dotChecked: { backgroundColor: "#000" },
+  dotPro: { borderWidth: 1, borderColor: "#000", backgroundColor: "#fff" },
+  hSection: { marginTop: 22, marginBottom: 2 },
+  hEntry: { flexDirection: "row", alignItems: "center", marginTop: 10, paddingVertical: 20, paddingHorizontal: 20, borderRadius: 25, backgroundColor: "#fff" },
+  hDate: { width: 30, alignItems: "center", marginRight: 4 },
+  hDateMonth: { fontFamily: "Poppins_400Regular", fontSize: 7, lineHeight: 9, color: "rgba(0,0,0,0.5)" },
+  hDateDay: { fontFamily: "Poppins_600SemiBold", fontSize: 16, lineHeight: 20, color: "#000" },
+  // Sign in / Create account, measured from the mockups.
+  auth: { paddingHorizontal: 20, paddingTop: 20, paddingBottom: 30 },
+  authTitle: { fontFamily: "Poppins_500Medium", fontSize: 32, lineHeight: 42, textAlign: "center", color: "#000" },
+  authSub: { fontFamily: "Poppins_400Regular", fontSize: 15, lineHeight: 22, textAlign: "center", color: "#000" },
+  seg: { flexDirection: "row", height: 59, marginTop: 22, padding: 7, borderRadius: 100, backgroundColor: "#fff" },
+  segPill: { position: "absolute", top: 7, bottom: 7, left: 7, borderRadius: 100, backgroundColor: "#000" },
+  segItem: { flex: 1, alignItems: "center", justifyContent: "center" },
+  segText: { fontFamily: "Poppins_600SemiBold", fontSize: 15, color: "#000" },
+  segTextOn: { color: "#fff" },
+  authLabel: { fontFamily: "Poppins_400Regular", fontSize: 15, lineHeight: 22, color: "#000", marginTop: 20, marginBottom: 10 },
+  authInput: { height: 58, paddingHorizontal: 20, borderRadius: 100, backgroundColor: "#fff", borderWidth: 1, borderColor: "rgba(0,0,0,0.05)", fontFamily: "Poppins_400Regular", fontSize: 15, color: "#000" },
+  forgot: { alignSelf: "flex-end", marginTop: 10 },
+  forgotText: { fontFamily: "Poppins_400Regular", fontSize: 13, color: "rgba(0,0,0,0.5)" },
+  authNote: { fontFamily: "Poppins_400Regular", fontSize: 13, textAlign: "center", color: "rgba(0,0,0,0.5)", marginTop: 12 },
+  authBtn: { marginTop: 20 },
+  divider: { flexDirection: "row", alignItems: "center", marginVertical: 14 },
+  dividerLine: { flex: 1, height: 1, backgroundColor: "rgba(0,0,0,0.2)" },
+  dividerText: { fontFamily: "Poppins_400Regular", fontSize: 14, color: "rgba(0,0,0,0.5)", marginHorizontal: 18 },
+  googleBtn: { flexDirection: "row", gap: 10, height: 59, borderRadius: 100, backgroundColor: "#fff", alignItems: "center", justifyContent: "center" },
+  googleText: { fontFamily: "Poppins_600SemiBold", fontSize: 15, color: "#000" },
+  welcomeLink: { fontFamily: "Poppins_400Regular", fontSize: 12, textAlign: "center", color: "rgba(0,0,0,0.5)", marginTop: 12 }, // the Home logo, scaled up to the start page's size
   // Centered horizontally, with the circle's middle ~90pt above the bottom (behind the message bar).
   glow: { position: "absolute", left: "50%", marginLeft: -GLOW_R, bottom: GLOW_Y - GLOW_R },
   greeting: { fontFamily: SERIF, fontSize: 28, lineHeight: 36, textAlign: "center", color: "#000", marginTop: 18, marginBottom: 28 },
