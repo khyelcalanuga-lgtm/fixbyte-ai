@@ -1585,11 +1585,37 @@ function Auth({ initial, onBack, onDone }: { initial: AuthMode; onBack: () => vo
   );
 }
 
-function Field({ label, ...props }: { label: string } & ComponentProps<typeof TextInput>) {
+// Password fields (secureTextEntry) get an eye button to show or hide what's typed.
+function Field({ label, secureTextEntry, ...props }: { label: string } & ComponentProps<typeof TextInput>) {
+  const [shown, setShown] = useState(false);
+  const input = (
+    <TextInput
+      placeholderTextColor="rgba(0,0,0,0.2)"
+      accessibilityLabel={label}
+      secureTextEntry={secureTextEntry && !shown}
+      style={[s.authInput, secureTextEntry && s.authInputSecret]}
+      {...props}
+    />
+  );
   return (
     <>
       <Text style={s.authLabel}>{label}</Text>
-      <TextInput placeholderTextColor="rgba(0,0,0,0.2)" accessibilityLabel={label} style={s.authInput} {...props} />
+      {secureTextEntry ? (
+        <View>
+          {input}
+          <Pressable
+            onPress={() => setShown((v) => !v)}
+            style={s.eye}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel={shown ? "Hide password" : "Show password"}
+          >
+            <Feather name={shown ? "eye-off" : "eye"} size={18} color="rgba(0,0,0,0.45)" />
+          </Pressable>
+        </View>
+      ) : (
+        input
+      )}
     </>
   );
 }
@@ -2636,6 +2662,8 @@ const s = StyleSheet.create({
   segTextOn: { color: "#fff" },
   authLabel: { fontFamily: "Poppins_400Regular", fontSize: 15, lineHeight: 22, color: "#000", marginTop: 20, marginBottom: 10 },
   authInput: { height: 58, paddingHorizontal: 20, borderRadius: 100, backgroundColor: "#fff", borderWidth: 1, borderColor: "rgba(0,0,0,0.05)", fontFamily: "Poppins_400Regular", fontSize: 15, color: "#000" },
+  authInputSecret: { paddingRight: 52 }, // room for the eye button
+  eye: { position: "absolute", right: 20, top: 0, bottom: 0, justifyContent: "center" },
   forgot: { alignSelf: "flex-end", marginTop: 10 },
   forgotText: { fontFamily: "Poppins_400Regular", fontSize: 13, color: "rgba(0,0,0,0.5)" },
   authNote: { fontFamily: "Poppins_400Regular", fontSize: 13, textAlign: "center", color: "rgba(0,0,0,0.5)", marginTop: 12 },
