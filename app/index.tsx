@@ -36,6 +36,18 @@ import { apiFetch } from "../lib/api";
 import { DAILY_LIMIT, recordUse, resetUsage, usedToday } from "../lib/usage";
 import { load, save } from "../lib/store";
 import { allowReminders, cancelReminders, remindLater } from "../lib/reminders";
+import { authMessage, firebaseAuth, firebaseReady } from "../lib/auth";
+import {
+  createUserWithEmailAndPassword,
+  GoogleAuthProvider,
+  onAuthStateChanged,
+  sendPasswordResetEmail,
+  signInWithEmailAndPassword,
+  signInWithPopup,
+  signOut,
+  updateProfile,
+  type User,
+} from "firebase/auth";
 import Constants from "expo-constants";
 
 type Question = { question: string; options: string[] };
@@ -115,7 +127,10 @@ export default function App() {
       return next;
     });
   const [tab, setTab] = useState<Tab>("home"); // My gadgets opens from Home's phone button; the tab bar does the rest
-  const [welcomed, setWelcomed] = useState(() => load(WELCOMED) === "yes"); // past the welcome page, ever
+  const [welcomed, setWelcomed] = useState(() => load(WELCOMED) === "yes"); // offline sign-in, used until Firebase is set up
+  // The Firebase account; undefined while Firebase is still restoring a saved sign-in.
+  const [user, setUser] = useState<User | null | undefined>(firebaseReady ? undefined : null);
+  const signedIn = firebaseReady ? !!user : welcomed;
   const [authMode, setAuthMode] = useState<AuthMode | null>(null); // Sign in / Create account, opened from Welcome
   const [turns, setTurns] = useState<Turn[]>([]);
   const [text, setText] = useState("");
@@ -197,6 +212,24 @@ export default function App() {
     setGuideStep(null);
     setShowShops(false);
     setResultIdx(i);
+  }
+
+  // Follows Firebase's signed-in account. The profile shows the account's email and name (when it has one).
+  useEffect(() => {
+    if (!firebaseReady) return;
+    return onAuthStateChanged(firebaseAuth(), (u) => {
+      setUser(u);
+      if (u) updateSettings({ email: u.email ?? "", name: u.displayName ?? "" });
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- subscribe once
+
+  // Sign out: ends the Firebase session (or the offline sign-in) and returns to the Welcome page.
+  function leave() {
+    if (firebaseReady) signOut(firebaseAuth()).catch(() => {});
+    save(WELCOMED, "no");
+    setWelcomed(false);
+    setAuthMode(null);
+    setTab("home");
   }
 
   function toggleSaved(i: number) {
@@ -323,7 +356,8 @@ export default function App() {
     setBusy(false);
   }
 
-  if (!fontsLoaded) return <StartPage />;
+  // Firebase restores a saved sign-in in a moment; the start page covers it, so Welcome never flashes by.
+  if (!fontsLoaded || user === undefined) return <StartPage />;
 
   const home = turns.length === 0 && !busy;
   const out = home && used >= DAILY_LIMIT;
@@ -334,7 +368,7 @@ export default function App() {
   return (
     <SafeAreaView style={s.screen} edges={["top", "left", "right"]}>
       <StatusBar style="dark" />
-      {!welcomed ? (
+      {!signedIn ? (
         authMode ? (
           <Auth
             key={authMode}
@@ -356,22 +390,15 @@ export default function App() {
         <Profile
           settings={settings}
           onChange={updateSettings}
-          onSignOut={() => {
-            save(WELCOMED, "no");
-            setWelcomed(false);
-            setAuthMode(null);
-            setTab("home");
-          }}
+          user={user ?? null}
+          onSignOut={leave}
           onErase={() => {
             cancelReminders();
             resetUsage();
             setUsed(0);
             save(SETTINGS_KEY, "{}");
             setSettings(DEFAULT_SETTINGS);
-            save(WELCOMED, "no");
-            setWelcomed(false);
-            setAuthMode(null);
-            setTab("home");
+            leave();
           }}
         />
       ) : diag ? (
@@ -394,13 +421,13 @@ export default function App() {
                 <Text style={s.title}>FixByte AI</Text>
                 {/* ponytail: initial-letter avatar (from the profile name); swap for a photo via <Image> when there's one */}
                 <Pressable onPress={() => setTab("profile")} style={[s.circle, s.avatar]} accessibilityLabel="Profile">
-                  <Text style={s.avatarText}>{(settings.name.trim()[0] ?? "?").toUpperCase()}</Text>
+                  <Text style={s.avatarText}>{initial(settings)}</Text>
                 </Pressable>
               </View>
               <View style={s.home}>
                 <Logo />
                 <Text style={s.greeting}>
-                  {greeting()}, {settings.name.trim().split(/\s+/)[0] || "there"}
+                  {settings.name.trim() ? `${greeting()}, ${settings.name.trim().split(/\s+/)[0]}` : greeting()}
                 </Text>
                 <View style={s.cards}>
                   <Card icon="camera" title="Scan a photo" subtitle="AI spots the damage" onPress={scan} />
@@ -579,7 +606,7 @@ export default function App() {
         </KeyboardAvoidingView>
       )}
       {/* One bar for all three tabs, so its pill can morph from tab to tab instead of being redrawn. */}
-      {welcomed && tab !== "home" && <TabBar active={tab} onTab={setTab} />}
+      {signedIn && tab !== "home" && <TabBar active={tab} onTab={setTab} />}
       {start && <StartPage onDone={() => setStart(false)} />}
     </SafeAreaView>
   );
@@ -846,8 +873,8 @@ function TabBar({ active, onTab }: { active: Tab; onTab: (t: Tab) => void }) {
 type Settings = { name: string; email: string; reminders: boolean; language: string; region: string };
 const SETTINGS_KEY = "settings";
 const DEFAULT_SETTINGS: Settings = {
-  name: "Khyel Calanuga",
-  email: "contact@khyelcalanuga.dev",
+  name: "",
+  email: "",
   reminders: true,
   language: "English",
   region: "Metro Manila",
@@ -864,6 +891,8 @@ const LANGUAGES = ["English", "Filipino", "Cebuano", "Spanish", "Japanese"];
 // Region is where shop search looks when location is off.
 const REGIONS = ["Metro Manila", "Cebu City", "Davao City", "Baguio", "Iloilo City", "Cagayan de Oro"];
 const SUPPORT_EMAIL = "contact@khyelcalanuga.dev";
+// The avatar letter: the name's first letter, else the email's.
+const initial = (st: Settings) => (st.name.trim()[0] ?? st.email.trim()[0] ?? "?").toUpperCase();
 const VERSION = Constants.expoConfig?.version ?? "1.0";
 
 type Doc = { heading: string; body: string }[];
@@ -896,11 +925,13 @@ type Row = { icon: FeatherName; label: string; value?: string; onPress: () => vo
 // Profile: who's signed in, totals from the gadgets and history, settings and support pages.
 function Profile({
   settings,
+  user,
   onChange,
   onSignOut,
   onErase,
 }: {
   settings: Settings;
+  user: User | null;
   onChange: (patch: Partial<Settings>) => void;
   onSignOut: () => void;
   onErase: () => void;
@@ -911,6 +942,7 @@ function Profile({
   const back = () => {
     setPage(null);
     setConfirmErase(false);
+    setNote("");
   };
   const stats = [
     { n: SAMPLE_GADGETS.length, label: "Gadgets" },
@@ -941,7 +973,9 @@ function Profile({
       <SubPage title="Edit profile" onBack={back}>
         <EditProfile
           settings={settings}
-          onSave={(patch) => {
+          emailLocked={!!user}
+          onSave={async (patch) => {
+            if (user) await updateProfile(user, { displayName: patch.name }); // saved to the account too
             onChange(patch);
             back();
           }}
@@ -987,10 +1021,26 @@ function Profile({
         <View style={[s.pSettings, s.pDoc]}>
           <Text style={s.pDocHeading}>Password</Text>
           <Text style={s.pDocBody}>
-            Sign-in isn't connected to a server yet, so there's no password to change. Passwords will be managed here once
-            accounts are live.
+            {user?.email
+              ? `To change your password, we'll email a reset link to ${user.email}.`
+              : "Sign-in isn't connected to Firebase yet, so there's no password to change."}
           </Text>
         </View>
+        {user?.email && (
+          <Pressable
+            onPress={() =>
+              sendPasswordResetEmail(firebaseAuth(), user.email!)
+                .then(() => setNote(`Reset link sent to ${user.email}. Check your inbox.`))
+                .catch((e) => setNote(authMessage(e)))
+            }
+            style={[s.googleBtn, s.pSignOut]}
+            accessibilityRole="button"
+          >
+            <Feather name="key" size={18} color="#000" />
+            <Text style={s.googleText}>Email me a reset link</Text>
+          </Pressable>
+        )}
+        {!!note && <Text style={[s.msgText, s.dim, s.pHint]}>{note}</Text>}
         <Pressable onPress={onSignOut} style={[s.googleBtn, s.pSignOut]} accessibilityRole="button">
           <Feather name="log-out" size={18} color="#000" />
           <Text style={s.googleText}>Sign out</Text>
@@ -1005,7 +1055,7 @@ function Profile({
           <Text style={[s.googleText, s.pSignOutText]}>{confirmErase ? "Tap again to erase" : "Erase data on this device"}</Text>
         </Pressable>
         <Text style={[s.msgText, s.dim, s.pHint]}>
-          Erasing removes your name, email, settings and daily count from this device and signs you out.
+          Erasing removes your name, settings and daily count from this device and signs you out. Your account stays.
         </Text>
       </SubPage>
     );
@@ -1068,11 +1118,11 @@ function Profile({
 
         <View style={s.pCard}>
           <View style={[s.pAvatar, s.pAvatarCenter]}>
-            <Text style={s.pAvatarText}>{(settings.name.trim()[0] ?? "?").toUpperCase()}</Text>
+            <Text style={s.pAvatarText}>{initial(settings)}</Text>
           </View>
           <View style={s.gText}>
-            <Text style={s.pName} numberOfLines={1}>
-              {settings.name}
+            <Text style={[s.pName, !settings.name.trim() && s.dim]} numberOfLines={1}>
+              {settings.name.trim() || "Add your name"}
             </Text>
             <Text style={s.pEmail} numberOfLines={1}>
               {settings.email}
@@ -1137,14 +1187,23 @@ function SubPage({ title, onBack, children }: { title: string; onBack: () => voi
   );
 }
 
-function EditProfile({ settings, onSave }: { settings: Settings; onSave: (patch: Pick<Settings, "name" | "email">) => void }) {
+// With a Firebase account the email is the sign-in email, so it's shown but not editable here.
+function EditProfile({
+  settings,
+  emailLocked,
+  onSave,
+}: {
+  settings: Settings;
+  emailLocked: boolean;
+  onSave: (patch: Pick<Settings, "name" | "email">) => Promise<void>;
+}) {
   const [name, setName] = useState(settings.name);
   const [email, setEmail] = useState(settings.email);
   const [error, setError] = useState("");
   function save() {
     if (!name.trim()) return setError("Enter your name.");
     if (!/^\S+@\S+\.\S+$/.test(email.trim())) return setError("Enter a valid email address.");
-    onSave({ name: name.trim(), email: email.trim() });
+    onSave({ name: name.trim(), email: email.trim() }).catch((e) => setError(authMessage(e)));
   }
   return (
     <>
@@ -1159,7 +1218,9 @@ function EditProfile({ settings, onSave }: { settings: Settings; onSave: (patch:
         autoComplete="email"
         textContentType="emailAddress"
         onSubmitEditing={save}
+        editable={!emailLocked}
       />
+      {emailLocked && <Text style={[s.msgText, s.dim, s.pHint]}>This is the email you sign in with.</Text>}
       {!!error && <Text style={s.error}>{error}</Text>}
       <Pressable onPress={save} style={[s.welcomeBtn, s.authBtn]} accessibilityRole="button">
         <Text style={s.welcomeBtnText}>Save</Text>
@@ -1377,8 +1438,8 @@ function History() {
 }
 
 // Sign in and Create account: one page with a switch between the two, as in the mockups.
-// ponytail: there are no real accounts yet. Sign in, Sign up and Google all go straight to Home. Connect an auth
-// service (Supabase, Firebase) in submit() and the Google button when accounts are needed.
+// Accounts are Firebase email/password accounts; Google sign-in works on web (phones need a native module).
+// Until Firebase is configured in .env, the buttons just go to Home, as before.
 type AuthMode = "signin" | "register";
 const AUTH_TEXT = {
   signin: { title: "Welcome back", sub: "Sign in to check on your gadgets.", button: "Sign in" },
@@ -1402,8 +1463,47 @@ function Auth({ initial, onBack, onDone }: { initial: AuthMode; onBack: () => vo
     Animated.spring(slide, { toValue: m === "register" ? 1 : 0, friction: 8, tension: 90, useNativeDriver: NATIVE }).start();
   }
 
-  // ponytail: not hooked up yet: Sign in and Sign up go straight to Home without checking the fields.
-  const submit = onDone;
+  const [busy, setBusy] = useState(false);
+  const fail = (e: unknown) => setMessage({ text: typeof e === "string" ? e : authMessage(e), error: true });
+
+  // Success needs nothing more here: the App's Firebase listener sees the new sign-in and opens Home.
+  async function submit() {
+    setMessage(null);
+    if (!firebaseReady) return onDone();
+    if (register && password !== confirm) return fail("The passwords don't match.");
+    setBusy(true);
+    try {
+      const auth = firebaseAuth();
+      if (register) await createUserWithEmailAndPassword(auth, email.trim(), password);
+      else await signInWithEmailAndPassword(auth, email.trim(), password);
+    } catch (e) {
+      fail(e);
+      setBusy(false);
+    }
+  }
+
+  async function forgot() {
+    if (!firebaseReady) return setMessage({ text: "Password reset isn't available yet.", error: false });
+    if (!email.trim()) return fail("Type your email above first.");
+    try {
+      await sendPasswordResetEmail(firebaseAuth(), email.trim());
+      setMessage({ text: `Reset link sent to ${email.trim()}. Check your inbox.`, error: false });
+    } catch (e) {
+      fail(e);
+    }
+  }
+
+  async function google() {
+    setMessage(null);
+    if (!firebaseReady) return onDone();
+    // ponytail: phones need a native Google module (and a development build, not Expo Go); web uses Firebase's popup.
+    if (Platform.OS !== "web") return setMessage({ text: "Google sign-in isn't available in the phone app yet. Use your email.", error: false });
+    try {
+      await signInWithPopup(firebaseAuth(), new GoogleAuthProvider());
+    } catch (e) {
+      fail(e);
+    }
+  }
 
   // The black pill is half the switch's inner width (the switch has 7pt padding on each side).
   const pillW = segW ? (segW - 14) / 2 : 0;
@@ -1461,14 +1561,14 @@ function Auth({ initial, onBack, onDone }: { initial: AuthMode; onBack: () => vo
             onSubmitEditing={submit}
           />
         ) : (
-          <Pressable onPress={() => setMessage({ text: "Password reset isn't available yet.", error: false })} style={s.forgot} hitSlop={8}>
+          <Pressable onPress={forgot} style={s.forgot} hitSlop={8}>
             <Text style={s.forgotText}>Forgot Password?</Text>
           </Pressable>
         )}
 
         {message && <Text style={message.error ? s.error : s.authNote}>{message.text}</Text>}
-        <Pressable onPress={submit} style={[s.welcomeBtn, s.authBtn]} accessibilityRole="button">
-          <Text style={s.welcomeBtnText}>{t.button}</Text>
+        <Pressable onPress={submit} disabled={busy} style={[s.welcomeBtn, s.authBtn, busy && s.disabled]} accessibilityRole="button">
+          <Text style={s.welcomeBtnText}>{busy ? (register ? "Creating account…" : "Signing in…") : t.button}</Text>
         </Pressable>
 
         <View style={s.divider}>
@@ -1476,7 +1576,7 @@ function Auth({ initial, onBack, onDone }: { initial: AuthMode; onBack: () => vo
           <Text style={s.dividerText}>or</Text>
           <View style={s.dividerLine} />
         </View>
-        <Pressable onPress={onDone} style={s.googleBtn} accessibilityRole="button" accessibilityLabel="Continue with Google">
+        <Pressable onPress={google} disabled={busy} style={s.googleBtn} accessibilityRole="button" accessibilityLabel="Continue with Google">
           <GoogleG />
           <Text style={s.googleText}>Google</Text>
         </Pressable>
