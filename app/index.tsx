@@ -719,13 +719,10 @@ function Welcome({ onStart, onSignIn }: { onStart: () => void; onSignIn: () => v
 }
 
 // My gadgets: the user's devices, with search and type filters, plus the bottom tab bar.
-// ponytail: shows the mockup's sample gadgets; registering and saving gadgets isn't built yet, so the + and
-// "Register a gadget" buttons do nothing.
+// ponytail: registering and saving gadgets isn't built yet, so the list is empty and the + and
+// "Register a gadget" buttons do nothing. Every account starts with no gadgets.
 type Gadget = { id: string; name: string; type: "phone" | "laptop"; issue: string; checks: number; last: string; status: string };
-const SAMPLE_GADGETS: Gadget[] = [
-  { id: "1", name: "iPhone 13", type: "phone", issue: "Screen flicker after a drop", checks: 4, last: "Sep 18", status: "Fixed" },
-  { id: "2", name: "iPhone 14", type: "phone", issue: "Screen flicker after a drop", checks: 4, last: "Sep 18", status: "Fixed" },
-];
+const GADGETS: Gadget[] = [];
 const GADGET_FILTERS = [
   { label: "All", type: null },
   { label: "Phones", type: "phone" },
@@ -736,7 +733,7 @@ function Gadgets() {
   const [query, setQuery] = useState("");
   const [type, setType] = useState<Gadget["type"] | null>(null);
   const q = query.trim().toLowerCase();
-  const shown = SAMPLE_GADGETS.filter(
+  const shown = GADGETS.filter(
     (g) => (!type || g.type === type) && (!q || `${g.name} ${g.issue}`.toLowerCase().includes(q)),
   );
 
@@ -745,7 +742,7 @@ function Gadgets() {
       <View style={s.gHeader}>
         <View>
           <Text style={s.gTitle}>My gadgets</Text>
-          <Text style={s.gCount}>{SAMPLE_GADGETS.length} registered</Text>
+          <Text style={s.gCount}>{GADGETS.length} registered</Text>
         </View>
         <Pressable style={[s.circle, s.gAdd]} accessibilityLabel="Register a gadget">
           <Feather name="plus" size={22} color={GREEN} />
@@ -754,7 +751,7 @@ function Gadgets() {
 
       <ScrollView style={s.flex} contentContainerStyle={s.gList} keyboardShouldPersistTaps="handled">
         <View style={s.gSearch}>
-          <Feather name="search" size={19} color="#000" />
+          <Feather name="search" size={20} color="#000" />
           <TextInput
             value={query}
             onChangeText={setQuery}
@@ -779,7 +776,7 @@ function Gadgets() {
         {shown.map((g) => (
           <View key={g.id} style={s.gCard}>
             <View style={s.gIcon}>
-              <Feather name={g.type === "laptop" ? "monitor" : "smartphone"} size={22} color="#fff" />
+              <Feather name={g.type === "laptop" ? "monitor" : "smartphone"} size={26} color="#fff" />
             </View>
             <View style={s.gText}>
               <Text style={s.gName} numberOfLines={1}>
@@ -793,12 +790,14 @@ function Gadgets() {
               </Text>
             </View>
             <View style={s.gStatus}>
-              <Feather name="check" size={11} color="#000" />
+              <Feather name="check" size={14} color="#000" />
               <Text style={s.gStatusText}>{g.status}</Text>
             </View>
           </View>
         ))}
-        {!shown.length && <Text style={[s.msgText, s.dim, s.gEmpty]}>No gadgets match.</Text>}
+        {!shown.length && (
+          <Text style={[s.msgText, s.dim, s.gEmpty]}>{GADGETS.length ? "No gadgets match." : "No gadgets yet."}</Text>
+        )}
 
         <Pressable style={s.gRegister} accessibilityRole="button">
           <Feather name="plus" size={20} color="#000" />
@@ -945,9 +944,9 @@ function Profile({
     setNote("");
   };
   const stats = [
-    { n: SAMPLE_GADGETS.length, label: "Gadgets" },
-    { n: SAMPLE_HISTORY.length, label: "Checks" },
-    { n: SAMPLE_HISTORY.filter((c) => c.status === "fixed").length, label: "Fixed Yourself" },
+    { n: GADGETS.length, label: "Gadgets" },
+    { n: HISTORY.length, label: "Checks" },
+    { n: HISTORY.filter((c) => c.status === "fixed").length, label: "Fixed Yourself" },
   ];
 
   async function setReminders(on: boolean) {
@@ -1129,7 +1128,7 @@ function Profile({
             </Text>
           </View>
           <Pressable onPress={() => setPage("edit")} style={s.pEdit} hitSlop={8} accessibilityLabel="Edit profile">
-            <Feather name="edit-2" size={19} color="#000" />
+            <Feather name="edit-2" size={21} color="#000" />
           </Pressable>
         </View>
 
@@ -1144,7 +1143,7 @@ function Profile({
 
         <View style={s.pSettings}>
           <View style={s.pRow}>
-            <Feather name="bell" size={18} color="#000" />
+            <Feather name="bell" size={20} color="#000" />
             <Text style={s.pRowLabel}>Repair reminders</Text>
             <Toggle on={settings.reminders} onChange={setReminders} label="Repair reminders" />
           </View>
@@ -1232,10 +1231,10 @@ function EditProfile({
 function SettingRow({ icon, label, value, onPress }: Row) {
   return (
     <Pressable onPress={onPress} style={s.pRow} accessibilityRole="button">
-      <Feather name={icon} size={18} color="#000" />
+      <Feather name={icon} size={20} color="#000" />
       <Text style={s.pRowLabel}>{label}</Text>
       {value && <Text style={s.pRowValue}>{value}</Text>}
-      <Feather name="chevron-right" size={16} color="rgba(0,0,0,0.6)" />
+      <Feather name="chevron-right" size={18} color="rgba(0,0,0,0.6)" />
     </Pressable>
   );
 }
@@ -1250,24 +1249,17 @@ function Toggle({ on, onChange, label }: { on: boolean; onChange: (on: boolean) 
   return (
     <RNPressable onPress={() => onChange(!on)} hitSlop={8} accessibilityRole="switch" accessibilityState={{ checked: on }} accessibilityLabel={label}>
       <Animated.View style={[s.toggle, { backgroundColor: v.interpolate({ inputRange: [0, 1], outputRange: ["#CFCFCF", "#2D2D2D"] }) }]}>
-        <Animated.View style={[s.knob, { transform: [{ translateX: v.interpolate({ inputRange: [0, 1], outputRange: [0, 16] }) }] }]} />
+        <Animated.View style={[s.knob, { transform: [{ translateX: v.interpolate({ inputRange: [0, 1], outputRange: [0, 20] }) }] }]} />
       </Animated.View>
     </RNPressable>
   );
 }
 
 // History: a month calendar marking each day's checks for one gadget, and the list of those checks.
-// ponytail: sample history from the mockup, matching the sample gadgets; nothing is recorded from real diagnoses yet.
+// ponytail: nothing is recorded from real diagnoses yet, so every account starts with an empty history.
 type CheckStatus = "fixed" | "checked" | "pro";
 type Check = { gadget: string; date: string; title: string; detail: string; status: CheckStatus }; // date: YYYY-MM-DD
-const SAMPLE_HISTORY: Check[] = [
-  { gadget: "1", date: "2026-09-04", title: "Battery drains overnight", detail: "Background app refresh", status: "fixed" },
-  { gadget: "1", date: "2026-09-11", title: "Screen flicker after a drop", detail: "Loose display connector", status: "fixed" },
-  { gadget: "1", date: "2026-09-15", title: "Speaker crackles", detail: "Dust in the speaker grille", status: "checked" },
-  { gadget: "1", date: "2026-09-18", title: "Screen flicker after a drop", detail: "Display connector re-seated", status: "fixed" },
-  { gadget: "1", date: "2026-09-21", title: "Cracked back glass", detail: "Needs a repair shop", status: "pro" },
-  { gadget: "2", date: "2026-09-18", title: "Screen flicker after a drop", detail: "Loose display connector", status: "fixed" },
-];
+const HISTORY: Check[] = [];
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const WEEKDAYS = ["S", "M", "T", "W", "TH", "F", "S"];
 const LEGEND: { status: CheckStatus; label: string }[] = [
@@ -1282,9 +1274,9 @@ function StatusDot({ status, big }: { status: CheckStatus; big?: boolean }) {
 }
 
 function History() {
-  const [gadget, setGadget] = useState(SAMPLE_GADGETS[0]);
+  const [gadget, setGadget] = useState<Gadget | undefined>(GADGETS[0]);
   const [picking, setPicking] = useState(false);
-  const checks = SAMPLE_HISTORY.filter((c) => c.gadget === gadget.id).sort((a, b) => a.date.localeCompare(b.date));
+  const checks = HISTORY.filter((c) => c.gadget === gadget?.id).sort((a, b) => a.date.localeCompare(b.date));
   // Opens on the month of the gadget's latest check (or this month when it has none).
   const opening = () => {
     const last = checks[checks.length - 1]?.date;
@@ -1318,7 +1310,7 @@ function History() {
     setGadget(g);
     setPicking(false);
     setDay(null);
-    const last = SAMPLE_HISTORY.filter((c) => c.gadget === g.id).map((c) => c.date).sort().pop();
+    const last = HISTORY.filter((c) => c.gadget === g.id).map((c) => c.date).sort().pop();
     const d = last ? new Date(`${last}T00:00:00`) : new Date();
     setView({ y: d.getFullYear(), m: d.getMonth() });
   };
@@ -1332,10 +1324,12 @@ function History() {
           <Text style={s.gTitle}>History</Text>
           <Text style={s.gCount}>Every check and fix, by date</Text>
         </View>
-        <Pressable onPress={() => setPicking((o) => !o)} style={s.hPicker} accessibilityLabel={`Gadget: ${gadget.name}`} accessibilityState={{ expanded: picking }}>
-          <Text style={s.hPickerText}>{gadget.name}</Text>
-          <Feather name={picking ? "chevron-up" : "chevron-down"} size={18} color="#000" />
-        </Pressable>
+        {gadget && (
+          <Pressable onPress={() => setPicking((o) => !o)} style={s.hPicker} accessibilityLabel={`Gadget: ${gadget.name}`} accessibilityState={{ expanded: picking }}>
+            <Text style={s.hPickerText}>{gadget.name}</Text>
+            <Feather name={picking ? "chevron-up" : "chevron-down"} size={20} color="#000" />
+          </Pressable>
+        )}
       </View>
 
       <ScrollView style={s.flex} contentContainerStyle={s.gList}>
@@ -1345,10 +1339,10 @@ function History() {
               {MONTHS[view.m]} {view.y}
             </Text>
             <Pressable onPress={() => move(-1)} hitSlop={10} accessibilityLabel="Previous month">
-              <Feather name="chevron-left" size={20} color="#000" />
+              <Feather name="chevron-left" size={24} color="#000" />
             </Pressable>
             <Pressable onPress={() => move(1)} hitSlop={10} style={s.hNext} accessibilityLabel="Next month">
-              <Feather name="chevron-right" size={20} color="#000" />
+              <Feather name="chevron-right" size={24} color="#000" />
             </Pressable>
           </View>
 
@@ -1399,7 +1393,8 @@ function History() {
         </View>
 
         <Text style={[s.monoLabel, s.hSection]}>
-          {gadget.name.toUpperCase()} · {label.toUpperCase()}
+          {gadget ? `${gadget.name.toUpperCase()} · ` : ""}
+          {label.toUpperCase()}
         </Text>
         {shown.map((c) => (
           <View key={c.date + c.title} style={s.hEntry}>
@@ -1418,13 +1413,17 @@ function History() {
             <StatusDot status={c.status} big />
           </View>
         ))}
-        {!shown.length && <Text style={[s.msgText, s.dim, s.gEmpty]}>No checks {day !== null ? "on this day" : "this month"}.</Text>}
+        {!shown.length && (
+          <Text style={[s.msgText, s.dim, s.gEmpty]}>
+            {!HISTORY.length ? "No checks yet." : `No checks ${day !== null ? "on this day" : "this month"}.`}
+          </Text>
+        )}
       </ScrollView>
 
       {/* Over the page, under the gadget button; a child of this full-page view so Android delivers its taps. */}
       {picking && (
         <Pop from="right" style={s.hMenu}>
-          {SAMPLE_GADGETS.map((g) => (
+          {GADGETS.map((g) => (
             <Pressable key={g.id} onPress={() => pick(g)} style={s.attachItem} accessibilityRole="button">
               <Feather name={g.type === "laptop" ? "monitor" : "smartphone"} size={17} color="#000" />
               <Text style={s.attachText}>{g.name}</Text>
@@ -2567,26 +2566,26 @@ const s = StyleSheet.create({
   welcomeBtnText: { fontFamily: "Poppins_600SemiBold", fontSize: 15, color: "#fff" },
   // My gadgets and the tab bar, measured from the mockup.
   gHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 20, paddingTop: 15 },
-  gTitle: { fontFamily: "Poppins_600SemiBold", fontSize: 20, lineHeight: 28, color: "#000" },
-  gCount: { fontFamily: "Poppins_400Regular", fontSize: 10, lineHeight: 15, color: "rgba(0,0,0,0.5)" },
+  gTitle: { fontFamily: "Poppins_600SemiBold", fontSize: 26, lineHeight: 34, color: "#000" },
+  gCount: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 19, color: "rgba(0,0,0,0.5)" },
   gAdd: { backgroundColor: "#000" },
   gList: { paddingHorizontal: 20, paddingTop: 15, paddingBottom: 20 },
   gSearch: { flexDirection: "row", alignItems: "center", height: 58, paddingHorizontal: 20, borderRadius: 100, backgroundColor: "#fff", borderWidth: 1, borderColor: "rgba(0,0,0,0.05)" },
-  gSearchInput: { flex: 1, height: "100%", marginLeft: 15, fontFamily: "Poppins_400Regular", fontSize: 15, color: "#000" },
+  gSearchInput: { flex: 1, height: "100%", marginLeft: 15, fontFamily: "Poppins_400Regular", fontSize: 16, color: "#000" },
   gFilters: { flexDirection: "row", gap: 10, marginTop: 10 },
-  gChip: { height: 40, paddingHorizontal: 20, borderRadius: 100, backgroundColor: "#fff", justifyContent: "center" },
-  gChipText: { fontFamily: "Poppins_400Regular", fontSize: 13, color: "#000" },
-  gCard: { flexDirection: "row", alignItems: "center", marginTop: 10, padding: 20, borderRadius: 25, backgroundColor: "#fff" },
-  gIcon: { width: 54, height: 54, borderRadius: 14, backgroundColor: "#000", alignItems: "center", justifyContent: "center" },
-  gText: { flex: 1, marginLeft: 10 },
-  gName: { fontFamily: "Poppins_500Medium", fontSize: 13, lineHeight: 19, color: "#000" },
-  gIssue: { fontFamily: "Poppins_400Regular", fontSize: 10, lineHeight: 15, color: "rgba(0,0,0,0.6)" },
-  gMeta: { fontFamily: "Poppins_400Regular", fontSize: 10, lineHeight: 15, color: "rgba(0,0,0,0.4)" },
-  gStatus: { alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 5, height: 20, paddingHorizontal: 10, borderRadius: 100, backgroundColor: GREEN },
-  gStatusText: { fontFamily: "Poppins_500Medium", fontSize: 10, color: "#000" },
+  gChip: { height: 44, paddingHorizontal: 22, borderRadius: 100, backgroundColor: "#fff", justifyContent: "center" },
+  gChipText: { fontFamily: "Poppins_400Regular", fontSize: 15, color: "#000" },
+  gCard: { flexDirection: "row", alignItems: "center", marginTop: 12, padding: 20, borderRadius: 25, backgroundColor: "#fff" },
+  gIcon: { width: 60, height: 60, borderRadius: 16, backgroundColor: "#000", alignItems: "center", justifyContent: "center" },
+  gText: { flex: 1, marginLeft: 14 },
+  gName: { fontFamily: "Poppins_500Medium", fontSize: 16, lineHeight: 23, color: "#000" },
+  gIssue: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 19, color: "rgba(0,0,0,0.6)" },
+  gMeta: { fontFamily: "Poppins_400Regular", fontSize: 12, lineHeight: 18, color: "rgba(0,0,0,0.4)" },
+  gStatus: { alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 5, height: 26, paddingHorizontal: 12, borderRadius: 100, backgroundColor: GREEN },
+  gStatusText: { fontFamily: "Poppins_500Medium", fontSize: 13, color: "#000" },
   gEmpty: { textAlign: "center", marginTop: 20 },
   gRegister: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 12, height: 74, marginTop: 10, borderRadius: 25, borderWidth: 1, borderStyle: "dashed", borderColor: "rgba(0,0,0,0.2)" },
-  gRegisterText: { fontFamily: "Poppins_500Medium", fontSize: 13, color: "#000" },
+  gRegisterText: { fontFamily: "Poppins_500Medium", fontSize: 15, color: "#000" },
   tabBar: { flexDirection: "row", gap: 10, paddingHorizontal: 20, paddingBottom: 20, paddingTop: 8 },
   tabHome: { width: 59, height: 59, borderRadius: 100, backgroundColor: "#fff", alignItems: "center", justifyContent: "center" },
   tabPill: { flex: 1, flexDirection: "row", height: 59, padding: 7, borderRadius: 100, backgroundColor: "#000" },
@@ -2596,61 +2595,61 @@ const s = StyleSheet.create({
   pPage: { paddingTop: 0 },
   pTitle: { textAlign: "center", marginTop: 26, marginBottom: 22 },
   pCard: { flexDirection: "row", alignItems: "center", padding: 20, borderRadius: 25, backgroundColor: "#fff" },
-  pAvatar: { width: 63, height: 63, borderRadius: 32, backgroundColor: "#D9D9D9", marginRight: 5 },
-  pName: { fontFamily: "Poppins_600SemiBold", fontSize: 15, lineHeight: 22, color: "#000" },
+  pAvatar: { width: 68, height: 68, borderRadius: 34, backgroundColor: "#D9D9D9", marginRight: 2 },
+  pName: { fontFamily: "Poppins_600SemiBold", fontSize: 19, lineHeight: 27, color: "#000" },
   pEdit: { padding: 7 },
-  pEmail: { fontFamily: "Poppins_400Regular", fontSize: 10, lineHeight: 15, color: "#000" },
+  pEmail: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 19, color: "rgba(0,0,0,0.6)" },
   pStats: { flexDirection: "row", gap: 10, marginTop: 10 },
-  pStat: { flex: 1, alignItems: "center", paddingTop: 18, paddingBottom: 20, borderRadius: 25, backgroundColor: "#fff" },
-  pStatNum: { fontFamily: "Poppins_500Medium", fontSize: 32, lineHeight: 42, color: "#000" },
-  pStatLabel: { fontFamily: "Poppins_400Regular", fontSize: 10, lineHeight: 15, color: "#000", marginTop: 2 },
-  pSettings: { marginTop: 10, paddingHorizontal: 20, paddingVertical: 14, borderRadius: 25, backgroundColor: "#fff" },
-  pRow: { flexDirection: "row", alignItems: "center", height: 46, gap: 12 },
-  pRowLabel: { flex: 1, fontFamily: "Poppins_400Regular", fontSize: 13, color: "#000" },
-  pRowValue: { fontFamily: "Poppins_400Regular", fontSize: 13, color: "rgba(0,0,0,0.45)" },
+  pStat: { flex: 1, alignItems: "center", paddingTop: 16, paddingBottom: 18, borderRadius: 25, backgroundColor: "#fff" },
+  pStatNum: { fontFamily: "Poppins_500Medium", fontSize: 34, lineHeight: 44, color: "#000" },
+  pStatLabel: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 18, textAlign: "center", color: "#000", marginTop: 2 },
+  pSettings: { marginTop: 12, paddingHorizontal: 20, paddingVertical: 10, borderRadius: 25, backgroundColor: "#fff" },
+  pRow: { flexDirection: "row", alignItems: "center", height: 56, gap: 14 },
+  pRowLabel: { flex: 1, fontFamily: "Poppins_400Regular", fontSize: 16, color: "#000" },
+  pRowValue: { fontFamily: "Poppins_400Regular", fontSize: 15, color: "rgba(0,0,0,0.45)" },
   pSignOut: { marginTop: 10 },
   pAvatarCenter: { alignItems: "center", justifyContent: "center" },
-  pAvatarText: { fontFamily: "Poppins_600SemiBold", fontSize: 24, color: "rgba(0,0,0,0.45)" },
+  pAvatarText: { fontFamily: "Poppins_600SemiBold", fontSize: 26, color: "rgba(0,0,0,0.45)" },
   pHint: { marginTop: 10, marginBottom: 4, paddingHorizontal: 6 },
   pDoc: { paddingVertical: 20, gap: 4 },
   pDocItem: { gap: 4, marginBottom: 12 },
-  pDocHeading: { fontFamily: "Poppins_500Medium", fontSize: 13, lineHeight: 20, color: "#000" },
-  pDocBody: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 20, color: "rgba(0,0,0,0.6)" },
+  pDocHeading: { fontFamily: "Poppins_500Medium", fontSize: 16, lineHeight: 23, color: "#000" },
+  pDocBody: { fontFamily: "Poppins_400Regular", fontSize: 15, lineHeight: 23, color: "rgba(0,0,0,0.6)" },
   pAbout: { alignItems: "center", paddingVertical: 28 },
   pAboutName: { marginTop: 16 },
   pAboutText: { textAlign: "center", marginTop: 8 },
   pSignOutText: { color: "#dc2626" },
-  toggle: { width: 40, height: 24, borderRadius: 12, padding: 3 },
-  knob: { width: 18, height: 18, borderRadius: 9, backgroundColor: "#fff" },
+  toggle: { width: 48, height: 28, borderRadius: 14, padding: 3 },
+  knob: { width: 22, height: 22, borderRadius: 11, backgroundColor: "#fff" },
   // History, measured from the mockup.
-  hPicker: { flexDirection: "row", alignItems: "center", gap: 10, height: 45, paddingHorizontal: 20, borderRadius: 100, backgroundColor: "#fff" },
-  hPickerText: { fontFamily: "Poppins_500Medium", fontSize: 13, color: "#000" },
-  hMenu: { position: "absolute", right: 20, top: 70, zIndex: 5, padding: 6, borderRadius: 22, backgroundColor: "#fff", borderWidth: 1, borderColor: "rgba(0,0,0,0.07)" },
+  hPicker: { flexDirection: "row", alignItems: "center", gap: 8, height: 48, paddingHorizontal: 20, borderRadius: 100, backgroundColor: "#fff" },
+  hPickerText: { fontFamily: "Poppins_500Medium", fontSize: 15, color: "#000" },
+  hMenu: { position: "absolute", right: 20, top: 76, zIndex: 5, padding: 6, borderRadius: 22, backgroundColor: "#fff", borderWidth: 1, borderColor: "rgba(0,0,0,0.07)" },
   hCal: { padding: 20, borderRadius: 25, backgroundColor: "#fff" },
-  hMonthRow: { flexDirection: "row", alignItems: "center", marginBottom: 14 },
-  hMonth: { flex: 1, fontFamily: "Poppins_500Medium", fontSize: 13, color: "#000" },
-  hNext: { marginLeft: 22 },
+  hMonthRow: { flexDirection: "row", alignItems: "center", marginBottom: 10 },
+  hMonth: { flex: 1, fontFamily: "Poppins_600SemiBold", fontSize: 17, color: "#000" },
+  hNext: { marginLeft: 24 },
   hWeek: { flexDirection: "row" },
-  hCell: { flex: 1, height: 30, alignItems: "center", justifyContent: "center" },
-  hWeekday: { fontFamily: "Poppins_400Regular", fontSize: 10, lineHeight: 30, textAlign: "center", color: "rgba(0,0,0,0.4)" },
-  hDay: { width: 26, height: 26, borderRadius: 13, alignItems: "center", justifyContent: "center" },
+  hCell: { flex: 1, height: 44, alignItems: "center", justifyContent: "center" },
+  hWeekday: { fontFamily: "Poppins_500Medium", fontSize: 12, lineHeight: 32, textAlign: "center", color: "rgba(0,0,0,0.4)" },
+  hDay: { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center" },
   hToday: { borderWidth: 1, borderColor: "#000" },
   hSelected: { backgroundColor: "#000" },
-  hDayText: { fontFamily: "Poppins_400Regular", fontSize: 10, color: "#000" },
-  hDayDot: { position: "absolute", bottom: -6 }, // just under the 26pt day circle, as in the mockup
-  hLegend: { flexDirection: "row", justifyContent: "center", gap: 16, marginTop: 16 },
-  hLegendItem: { flexDirection: "row", alignItems: "center", gap: 6 },
-  hLegendText: { fontFamily: "Poppins_400Regular", fontSize: 10, color: "#000" },
-  dot: { width: 5, height: 5, borderRadius: 3 },
-  dotBig: { width: 8, height: 8, borderRadius: 4 },
+  hDayText: { fontFamily: "Poppins_400Regular", fontSize: 15, color: "#000" },
+  hDayDot: { position: "absolute", bottom: -2 }, // just under the day circle
+  hLegend: { flexDirection: "row", justifyContent: "center", flexWrap: "wrap", gap: 18, marginTop: 14 },
+  hLegendItem: { flexDirection: "row", alignItems: "center", gap: 7 },
+  hLegendText: { fontFamily: "Poppins_400Regular", fontSize: 13, color: "#000" },
+  dot: { width: 6, height: 6, borderRadius: 3 },
+  dotBig: { width: 10, height: 10, borderRadius: 5 },
   dotFixed: { backgroundColor: GREEN },
   dotChecked: { backgroundColor: "#000" },
   dotPro: { borderWidth: 1, borderColor: "#000", backgroundColor: "#fff" },
   hSection: { marginTop: 22, marginBottom: 2 },
-  hEntry: { flexDirection: "row", alignItems: "center", marginTop: 10, paddingVertical: 20, paddingHorizontal: 20, borderRadius: 25, backgroundColor: "#fff" },
-  hDate: { width: 30, alignItems: "center", marginRight: 4 },
-  hDateMonth: { fontFamily: "Poppins_400Regular", fontSize: 7, lineHeight: 9, color: "rgba(0,0,0,0.5)" },
-  hDateDay: { fontFamily: "Poppins_600SemiBold", fontSize: 16, lineHeight: 20, color: "#000" },
+  hEntry: { flexDirection: "row", alignItems: "center", marginTop: 12, paddingVertical: 18, paddingHorizontal: 20, borderRadius: 25, backgroundColor: "#fff" },
+  hDate: { width: 40, alignItems: "center", marginRight: 2 },
+  hDateMonth: { fontFamily: "Poppins_500Medium", fontSize: 11, lineHeight: 14, color: "rgba(0,0,0,0.5)" },
+  hDateDay: { fontFamily: "Poppins_600SemiBold", fontSize: 22, lineHeight: 28, color: "#000" },
   // Sign in / Create account, measured from the mockups.
   auth: { paddingHorizontal: 20, paddingTop: 20, paddingBottom: 30 },
   authTitle: { fontFamily: "Poppins_500Medium", fontSize: 32, lineHeight: 42, textAlign: "center", color: "#000" },
