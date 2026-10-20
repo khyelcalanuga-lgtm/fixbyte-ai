@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
+import { forwardRef, useEffect, useRef, useState, type ComponentProps, type ReactNode, type RefObject } from "react";
 import {
   Alert,
   Animated,
@@ -23,9 +23,12 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 // Moves with the keyboard as it slides on phones (see lib/keyboard.tsx).
 import { KeyboardAvoidingView } from "../lib/keyboard";
+import { BlurTargetView, BlurView } from "expo-blur";
+import { LinearGradient } from "expo-linear-gradient";
+import { GlassView, isGlassEffectAPIAvailable, isLiquidGlassAvailable } from "expo-glass-effect";
 import { StatusBar } from "expo-status-bar";
 import * as ImagePicker from "expo-image-picker";
-import { Feather } from "@expo/vector-icons";
+import { Feather, MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Location from "expo-location";
 import Svg, { Circle, Path, Polyline, type CircleProps } from "react-native-svg";
 import { useFonts } from "expo-font";
@@ -128,7 +131,8 @@ export default function App() {
       save(SETTINGS_KEY, JSON.stringify(next));
       return next;
     });
-  const [tab, setTab] = useState<Tab>("home"); // My gadgets opens from Home's phone button; the tab bar does the rest
+  const [tab, setTab] = useState<Tab>("home");
+  const glassTarget = useRef<View>(null); // the page under the glass tab bar (Android blurs this view) // My gadgets opens from Home's phone button; the tab bar does the rest
   const [welcomed, setWelcomed] = useState(() => load(WELCOMED) === "yes"); // offline sign-in, used until Firebase is set up
   // The Firebase account; undefined while Firebase is still restoring a saved sign-in.
   const [user, setUser] = useState<User | null | undefined>(firebaseReady ? undefined : null);
@@ -432,320 +436,322 @@ export default function App() {
   return (
     <SafeAreaView style={s.screen} edges={["top", "left", "right"]}>
       <StatusBar style="dark" />
-      {!signedIn ? (
-        authMode ? (
-          <Auth
-            key={authMode}
-            initial={authMode}
-            onBack={() => setAuthMode(null)}
-            onDone={(created) => {
-              save(WELCOMED, "yes");
-              setWelcomed(true);
-              if (created) setSetup(true); // offline sign-in: Firebase's listener handles this otherwise
+      <BlurTargetView ref={glassTarget} style={s.flex}>
+        {!signedIn ? (
+          authMode ? (
+            <Auth
+              key={authMode}
+              initial={authMode}
+              onBack={() => setAuthMode(null)}
+              onDone={(created) => {
+                save(WELCOMED, "yes");
+                setWelcomed(true);
+                if (created) setSetup(true); // offline sign-in: Firebase's listener handles this otherwise
+              }}
+            />
+          ) : (
+            <Welcome onStart={() => setAuthMode("register")} onSignIn={() => setAuthMode("signin")} />
+          )
+        ) : setup ? (
+          <Setup
+            settings={settings}
+            onFinish={(patch) => {
+              updateSettings(patch);
+              if (user && patch.name !== undefined) updateProfile(user, { displayName: patch.name }).catch(() => {});
+              save(`${SETUP_KEY}-${user?.uid ?? "offline"}`, "done");
+              setSetup(false);
+              setTab("home");
             }}
           />
+        ) : tab === "gadgets" ? (
+          <Gadgets
+            gadgets={gadgets}
+            history={history}
+            onChange={(list) => {
+              saveGadgets(list);
+              saveHistory(history.filter((c) => list.some((g) => g.id === c.gadget))); // a removed gadget's checks go too
+            }}
+            onCheck={(g) => {
+              reset();
+              setForGadget(g);
+              setTab("home");
+            }}
+          />
+        ) : tab === "history" ? (
+          <History gadgets={gadgets} history={history} />
+        ) : tab === "profile" ? (
+          <Profile
+            gadgetCount={gadgets.length}
+            checkCount={history.length}
+            fixedCount={history.filter((c) => c.status === "fixed").length}
+            settings={settings}
+            onChange={updateSettings}
+            user={user ?? null}
+            onSignOut={leave}
+            onErase={() => {
+              cancelReminders();
+              resetUsage();
+              setUsed(0);
+              save(SETTINGS_KEY, "{}");
+              setSettings(DEFAULT_SETTINGS);
+              saveGadgets([]);
+              saveHistory([]);
+              leave();
+            }}
+          />
+        ) : diag ? (
+          <Diagnosing d={diag} onCancel={cancel} />
+        ) : result && guideStep !== null ? (
+          <Guide
+            d={result.diagnosis!}
+            step={guideStep}
+            onStep={setGuideStep}
+            onClose={(finished) => {
+              setGuideStep(null);
+              const c = history.find((h) => h.id === result.check);
+              if (finished && c && c.status !== "fixed") setAskFixed(c.id);
+            }}
+          />
+        ) : result && showShops ? (
+          <Shops t={result} region={settings.region} onBack={() => setShowShops(false)} />
         ) : (
-          <Welcome onStart={() => setAuthMode("register")} onSignIn={() => setAuthMode("signin")} />
-        )
-      ) : setup ? (
-        <Setup
-          settings={settings}
-          onFinish={(patch) => {
-            updateSettings(patch);
-            if (user && patch.name !== undefined) updateProfile(user, { displayName: patch.name }).catch(() => {});
-            save(`${SETUP_KEY}-${user?.uid ?? "offline"}`, "done");
-            setSetup(false);
-            setTab("home");
-          }}
-        />
-      ) : tab === "gadgets" ? (
-        <Gadgets
-          gadgets={gadgets}
-          history={history}
-          onChange={(list) => {
-            saveGadgets(list);
-            saveHistory(history.filter((c) => list.some((g) => g.id === c.gadget))); // a removed gadget's checks go too
-          }}
-          onCheck={(g) => {
-            reset();
-            setForGadget(g);
-            setTab("home");
-          }}
-        />
-      ) : tab === "history" ? (
-        <History gadgets={gadgets} history={history} />
-      ) : tab === "profile" ? (
-        <Profile
-          gadgetCount={gadgets.length}
-          checkCount={history.length}
-          fixedCount={history.filter((c) => c.status === "fixed").length}
-          settings={settings}
-          onChange={updateSettings}
-          user={user ?? null}
-          onSignOut={leave}
-          onErase={() => {
-            cancelReminders();
-            resetUsage();
-            setUsed(0);
-            save(SETTINGS_KEY, "{}");
-            setSettings(DEFAULT_SETTINGS);
-            saveGadgets([]);
-            saveHistory([]);
-            leave();
-          }}
-        />
-      ) : diag ? (
-        <Diagnosing d={diag} onCancel={cancel} />
-      ) : result && guideStep !== null ? (
-        <Guide
-          d={result.diagnosis!}
-          step={guideStep}
-          onStep={setGuideStep}
-          onClose={(finished) => {
-            setGuideStep(null);
-            const c = history.find((h) => h.id === result.check);
-            if (finished && c && c.status !== "fixed") setAskFixed(c.id);
-          }}
-        />
-      ) : result && showShops ? (
-        <Shops t={result} region={settings.region} onBack={() => setShowShops(false)} />
-      ) : (
-        <KeyboardAvoidingView style={s.flex} behavior="padding">
-          {home && !result && <DotGlow />}
-          {result ? (
-            <Result
-              t={result}
-              onBack={() => setResultIdx(null)}
-              top={
-                filing && filing.turn === resultIdx ? (
-                  <FileCheck
-                    device={filing.device}
-                    gadgets={gadgets}
-                    onPick={(g) => fileCheck(filing.turn, g.id, filing.check)}
-                    onAdd={() => {
-                      const g = newGadget(filing.device || "My device", filing.kind);
-                      saveGadgets([g, ...gadgets]);
-                      fileCheck(filing.turn, g.id, filing.check);
-                    }}
-                    onSkip={() => setFiling(null)}
-                  />
-                ) : askFixed && askFixed === result.check ? (
-                  <AskFixed
-                    gadget={gadgets.find((g) => g.id === history.find((c) => c.id === askFixed)?.gadget)?.name}
-                    onAnswer={(fixed) => {
-                      if (fixed) saveHistory(history.map((c) => (c.id === askFixed ? { ...c, status: "fixed" } : c)));
-                      setAskFixed(null);
-                    }}
-                  />
-                ) : undefined
-              }
-            />
-          ) : home ? (
-            <>
-              <View style={s.header}>
-                <Pressable onPress={() => setTab("gadgets")} style={s.circle} accessibilityLabel="My gadgets">
-                  <Feather name="smartphone" size={20} color="#000" />
-                </Pressable>
-                <Text style={s.title}>FixByte AI</Text>
-                {/* ponytail: initial-letter avatar (from the profile name); swap for a photo via <Image> when there's one */}
-                <Pressable onPress={() => setTab("profile")} style={[s.circle, s.avatar]} accessibilityLabel="Profile">
-                  <Text style={s.avatarText}>{initial(settings)}</Text>
-                </Pressable>
-              </View>
-              <View style={s.home}>
-                <Logo />
-                <Text style={s.greeting}>
-                  {settings.name.trim() ? `${greeting()}, ${settings.name.trim().split(/\s+/)[0]}` : greeting()}
-                </Text>
-                <View style={s.cards}>
-                  <Card icon="camera" title="Scan a photo" subtitle="AI spots the damage" onPress={scan} />
-                  <Card icon="message-square" title="Describe it" subtitle="Type the symptoms" onPress={() => input.current?.focus()} />
-                </View>
-                {!!error && <Text style={s.error}>{error}</Text>}
-              </View>
-            </>
-          ) : (
-            <>
-              <View style={s.header}>
-                <Pressable onPress={reset} style={s.circle} accessibilityLabel="Back">
-                  <Feather name="arrow-left" size={20} color="#000" />
-                </Pressable>
-                <Text style={s.title}>New diagnosis</Text>
-                <Pressable onPress={menu} style={s.circle} accessibilityLabel="More options">
-                  <Feather name="more-horizontal" size={20} color="#000" />
-                </Pressable>
-              </View>
-              {time && <Text style={s.time}>TODAY, {time}</Text>}
-              <ScrollView
-                ref={scroll}
-                style={s.flex}
-                contentContainerStyle={s.log}
-                onContentSizeChange={() => scroll.current?.scrollToEnd()}
-              >
-                {turns.map((t, i) =>
-                  t.role === "user" ? (
-                    // Each bubble pops in on its own, one after the other.
-                    <View key={i} style={s.userTurn}>
-                      {t.image && (
-                        <Pop from="right" style={s.photo}>
-                          <Image source={{ uri: t.image }} style={s.photoImg} accessibilityLabel="Your photo" />
-                        </Pop>
-                      )}
-                      {t.text && (
-                        <Pop from="right" delay={t.image ? STAGGER_MS : 0} style={[s.bubble, s.user]}>
-                          <Text selectable style={[s.msgText, s.userText]}>{t.text}</Text>
-                        </Pop>
-                      )}
-                    </View>
-                  ) : t.diagnosis ? (
-                    // The verdict lives on the Diagnosis page; the chat keeps a card that reopens it.
-                    <Pop key={i} from="left">
-                      <Pressable onPress={() => openResult(i)} style={[s.bubble, s.assistant, s.verdictCard]}>
-                        <Text style={s.verdictLabel}>DIAGNOSIS</Text>
-                        <Text style={s.verdictTitle}>{t.diagnosis.title}</Text>
-                        <View style={s.verdictLink}>
-                          <Text style={[s.msgText, s.dim]}>View diagnosis</Text>
-                          <Feather name="chevron-right" size={16} color="rgba(0,0,0,0.5)" />
-                        </View>
-                      </Pressable>
-                    </Pop>
-                  ) : (
-                    <View key={i} style={s.assistantTurn}>
-                      <Pop from="left" style={[s.bubble, s.assistant]}>
-                        <Text selectable style={s.msgText}>{t.text}</Text>
-                      </Pop>
-                      {t.questions.length > 0 && (
-                        <Pop from="left" delay={STAGGER_MS} style={[s.bubble, s.assistant, s.qCard]}>
-                            {t.questions.map((q, qi) => (
-                              <View key={qi}>
-                                <Text style={s.msgText}>{q.question}</Text>
-                                <View style={s.chips}>
-                                  {q.options.map((o) => {
-                                    const on = t.picked[qi] === o;
-                                    return (
-                                      <Pressable
-                                        key={o}
-                                        disabled={t !== pending}
-                                        onPress={() => choose(qi, o)}
-                                        style={[s.chip, on && s.chipOn]}
-                                        accessibilityRole="radio"
-                                        accessibilityState={{ selected: on }}
-                                      >
-                                        <Text style={[s.chipText, on && s.chipTextOn]}>{o}</Text>
-                                      </Pressable>
-                                    );
-                                  })}
-                                </View>
-                              </View>
-                            ))}
-                        </Pop>
-                      )}
-                    </View>
-                  ),
-                )}
-                {busy && (
-                  <Pop from="left" delay={STAGGER_MS}>
-                    <Typing />
-                  </Pop>
-                )}
-                {!!error && <Text style={s.error}>{error}</Text>}
-              </ScrollView>
-            </>
-          )}
-
-          <View style={s.footer}>
-            {result?.diagnosis?.difficulty === "Pro repair" ? (
-              // The professional page has no follow-up bar: its job is getting the device to a shop.
+          <KeyboardAvoidingView style={s.flex} behavior="padding">
+            {home && !result && <DotGlow />}
+            {result ? (
+              <Result
+                t={result}
+                onBack={() => setResultIdx(null)}
+                top={
+                  filing && filing.turn === resultIdx ? (
+                    <FileCheck
+                      device={filing.device}
+                      gadgets={gadgets}
+                      onPick={(g) => fileCheck(filing.turn, g.id, filing.check)}
+                      onAdd={() => {
+                        const g = newGadget(filing.device || "My device", filing.kind);
+                        saveGadgets([g, ...gadgets]);
+                        fileCheck(filing.turn, g.id, filing.check);
+                      }}
+                      onSkip={() => setFiling(null)}
+                    />
+                  ) : askFixed && askFixed === result.check ? (
+                    <AskFixed
+                      gadget={gadgets.find((g) => g.id === history.find((c) => c.id === askFixed)?.gadget)?.name}
+                      onAnswer={(fixed) => {
+                        if (fixed) saveHistory(history.map((c) => (c.id === askFixed ? { ...c, status: "fixed" } : c)));
+                        setAskFixed(null);
+                      }}
+                    />
+                  ) : undefined
+                }
+              />
+            ) : home ? (
               <>
-                <Text style={s.disclaimer}>FixByte AI gives guidance only. It can't inspect your device in person.</Text>
-                <View style={s.actions}>
-                  <Pressable onPress={() => setShowShops(true)} style={[s.guideBtn, s.shopBtn]} accessibilityRole="button">
-                    <Text style={s.shopText}>Find a repair shop</Text>
+                <View style={s.header}>
+                  <Pressable onPress={() => setTab("gadgets")} style={s.circle} accessibilityLabel="My gadgets">
+                    <Feather name="smartphone" size={20} color="#000" />
                   </Pressable>
-                  <Bookmark saved={!!result.saved} big onPress={() => toggleSaved(resultIdx!)} />
+                  <Text style={s.title}>FixByte AI</Text>
+                  {/* ponytail: initial-letter avatar (from the profile name); swap for a photo via <Image> when there's one */}
+                  <Pressable onPress={() => setTab("profile")} style={[s.circle, s.avatar]} accessibilityLabel="Profile">
+                    <Text style={s.avatarText}>{initial(settings)}</Text>
+                  </Pressable>
+                </View>
+                <View style={s.home}>
+                  <Logo />
+                  <Text style={s.greeting}>
+                    {settings.name.trim() ? `${greeting()}, ${settings.name.trim().split(/\s+/)[0]}` : greeting()}
+                  </Text>
+                  <View style={s.cards}>
+                    <Card icon="camera" title="Scan a photo" subtitle="AI spots the damage" onPress={scan} />
+                    <Card icon="message-square" title="Describe it" subtitle="Type the symptoms" onPress={() => input.current?.focus()} />
+                  </View>
+                  {!!error && <Text style={s.error}>{error}</Text>}
                 </View>
               </>
             ) : (
               <>
-                {!result && <Usage used={used} />}
-                {forGadget && !result && (
-                  <View style={s.forTag}>
-                    <Feather name={kindIcon(forGadget.kind)} size={16} color="#000" />
-                    <Text style={s.forTagText} numberOfLines={1}>
-                      Checking your {forGadget.name}
-                    </Text>
-                    <Pressable onPress={() => setForGadget(null)} hitSlop={10} accessibilityLabel="Stop checking this gadget">
-                      <Feather name="x" size={16} color="rgba(0,0,0,0.5)" />
-                    </Pressable>
-                  </View>
-                )}
-                {result ? (
-                  <View style={[s.actions, s.actionsGap]}>
-                    <Pressable onPress={() => setGuideStep(0)} style={s.guideBtn} accessibilityRole="button">
-                      <Feather name="tool" size={18} color={GREEN} />
-                      <Text style={s.guideText}>Start repair guide</Text>
-                    </Pressable>
-                    <Bookmark saved={!!result.saved} onPress={() => toggleSaved(resultIdx!)} />
-                  </View>
-                ) : (
-                  !home && !image && <Text style={s.hint}>Add another photo for a sharper result</Text>
-                )}
-                {image && (
-                  <View style={s.preview}>
-                    <Image source={{ uri: image }} style={s.thumb} />
-                    <Pressable onPress={() => setImage(null)} style={s.remove} accessibilityLabel="Remove photo">
-                      <Feather name="x" size={14} color="#fff" />
-                    </Pressable>
-                  </View>
-                )}
-                <View style={s.bar}>
-                  <Pressable
-                    onPress={() => {
-                      Keyboard.dismiss(); // otherwise the open keyboard covers the menu
-                      setAttachOpen((o) => !o);
-                    }}
-                    hitSlop={8}
-                    accessibilityLabel={attachOpen ? "Close attach menu" : "Attach a photo"}
-                    accessibilityState={{ expanded: attachOpen }}
-                  >
-                    <Feather name={attachOpen ? "x" : "paperclip"} size={17} color="#000" />
+                <View style={s.header}>
+                  <Pressable onPress={reset} style={s.circle} accessibilityLabel="Back">
+                    <Feather name="arrow-left" size={20} color="#000" />
                   </Pressable>
-                  <TextInput
-                    ref={input}
-                    onFocus={() => setAttachOpen(false)}
-                    value={text}
-                    onChangeText={setText}
-                    onSubmitEditing={() => send()}
-                    placeholder={home ? "Describe the problem..." : result ? "Ask a follow-up..." : "Add more details..."}
-                    placeholderTextColor="rgba(0,0,0,0.2)"
-                    accessibilityLabel="Message"
-                    style={s.input}
-                  />
-                  <Pressable onPress={() => send()} disabled={busy || out} style={[s.send, (busy || out) && s.disabled]} accessibilityLabel="Send">
-                    <Feather name="arrow-up" size={18} color="#fff" />
+                  <Text style={s.title}>New diagnosis</Text>
+                  <Pressable onPress={menu} style={s.circle} accessibilityLabel="More options">
+                    <Feather name="more-horizontal" size={20} color="#000" />
                   </Pressable>
                 </View>
+                {time && <Text style={s.time}>TODAY, {time}</Text>}
+                <ScrollView
+                  ref={scroll}
+                  style={s.flex}
+                  contentContainerStyle={s.log}
+                  onContentSizeChange={() => scroll.current?.scrollToEnd()}
+                >
+                  {turns.map((t, i) =>
+                    t.role === "user" ? (
+                      // Each bubble pops in on its own, one after the other.
+                      <View key={i} style={s.userTurn}>
+                        {t.image && (
+                          <Pop from="right" style={s.photo}>
+                            <Image source={{ uri: t.image }} style={s.photoImg} accessibilityLabel="Your photo" />
+                          </Pop>
+                        )}
+                        {t.text && (
+                          <Pop from="right" delay={t.image ? STAGGER_MS : 0} style={[s.bubble, s.user]}>
+                            <Text selectable style={[s.msgText, s.userText]}>{t.text}</Text>
+                          </Pop>
+                        )}
+                      </View>
+                    ) : t.diagnosis ? (
+                      // The verdict lives on the Diagnosis page; the chat keeps a card that reopens it.
+                      <Pop key={i} from="left">
+                        <Pressable onPress={() => openResult(i)} style={[s.bubble, s.assistant, s.verdictCard]}>
+                          <Text style={s.verdictLabel}>DIAGNOSIS</Text>
+                          <Text style={s.verdictTitle}>{t.diagnosis.title}</Text>
+                          <View style={s.verdictLink}>
+                            <Text style={[s.msgText, s.dim]}>View diagnosis</Text>
+                            <Feather name="chevron-right" size={16} color="rgba(0,0,0,0.5)" />
+                          </View>
+                        </Pressable>
+                      </Pop>
+                    ) : (
+                      <View key={i} style={s.assistantTurn}>
+                        <Pop from="left" style={[s.bubble, s.assistant]}>
+                          <Text selectable style={s.msgText}>{t.text}</Text>
+                        </Pop>
+                        {t.questions.length > 0 && (
+                          <Pop from="left" delay={STAGGER_MS} style={[s.bubble, s.assistant, s.qCard]}>
+                              {t.questions.map((q, qi) => (
+                                <View key={qi}>
+                                  <Text style={s.msgText}>{q.question}</Text>
+                                  <View style={s.chips}>
+                                    {q.options.map((o) => {
+                                      const on = t.picked[qi] === o;
+                                      return (
+                                        <Pressable
+                                          key={o}
+                                          disabled={t !== pending}
+                                          onPress={() => choose(qi, o)}
+                                          style={[s.chip, on && s.chipOn]}
+                                          accessibilityRole="radio"
+                                          accessibilityState={{ selected: on }}
+                                        >
+                                          <Text style={[s.chipText, on && s.chipTextOn]}>{o}</Text>
+                                        </Pressable>
+                                      );
+                                    })}
+                                  </View>
+                                </View>
+                              ))}
+                          </Pop>
+                        )}
+                      </View>
+                    ),
+                  )}
+                  {busy && (
+                    <Pop from="left" delay={STAGGER_MS}>
+                      <Typing />
+                    </Pop>
+                  )}
+                  {!!error && <Text style={s.error}>{error}</Text>}
+                </ScrollView>
               </>
             )}
-          </View>
-          {/* Floats over the page just above the message bar, so nothing else moves. It's a child of this
-              full-screen view rather than the footer: Android ignores taps outside a parent's bounds. */}
-          {attachOpen && (
-            <Pop from="left" style={s.attachMenu}>
-              <Pressable onPress={() => attach(true)} style={s.attachItem} accessibilityRole="button">
-                <Feather name="camera" size={17} color="#000" />
-                <Text style={s.attachText}>Take a photo</Text>
-              </Pressable>
-              <Pressable onPress={() => attach(false)} style={s.attachItem} accessibilityRole="button">
-                <Feather name="image" size={17} color="#000" />
-                <Text style={s.attachText}>Choose from gallery</Text>
-              </Pressable>
-            </Pop>
-          )}
-        </KeyboardAvoidingView>
-      )}
+
+            <View style={s.footer}>
+              {result?.diagnosis?.difficulty === "Pro repair" ? (
+                // The professional page has no follow-up bar: its job is getting the device to a shop.
+                <>
+                  <Text style={s.disclaimer}>FixByte AI gives guidance only. It can't inspect your device in person.</Text>
+                  <View style={s.actions}>
+                    <Pressable onPress={() => setShowShops(true)} style={[s.guideBtn, s.shopBtn]} accessibilityRole="button">
+                      <Text style={s.shopText}>Find a repair shop</Text>
+                    </Pressable>
+                    <Bookmark saved={!!result.saved} big onPress={() => toggleSaved(resultIdx!)} />
+                  </View>
+                </>
+              ) : (
+                <>
+                  {!result && <Usage used={used} />}
+                  {forGadget && !result && (
+                    <View style={s.forTag}>
+                      <Feather name={kindIcon(forGadget.kind)} size={16} color="#000" />
+                      <Text style={s.forTagText} numberOfLines={1}>
+                        Checking your {forGadget.name}
+                      </Text>
+                      <Pressable onPress={() => setForGadget(null)} hitSlop={10} accessibilityLabel="Stop checking this gadget">
+                        <Feather name="x" size={16} color="rgba(0,0,0,0.5)" />
+                      </Pressable>
+                    </View>
+                  )}
+                  {result ? (
+                    <View style={[s.actions, s.actionsGap]}>
+                      <Pressable onPress={() => setGuideStep(0)} style={s.guideBtn} accessibilityRole="button">
+                        <Feather name="tool" size={18} color={GREEN} />
+                        <Text style={s.guideText}>Start repair guide</Text>
+                      </Pressable>
+                      <Bookmark saved={!!result.saved} onPress={() => toggleSaved(resultIdx!)} />
+                    </View>
+                  ) : (
+                    !home && !image && <Text style={s.hint}>Add another photo for a sharper result</Text>
+                  )}
+                  {image && (
+                    <View style={s.preview}>
+                      <Image source={{ uri: image }} style={s.thumb} />
+                      <Pressable onPress={() => setImage(null)} style={s.remove} accessibilityLabel="Remove photo">
+                        <Feather name="x" size={14} color="#fff" />
+                      </Pressable>
+                    </View>
+                  )}
+                  <View style={s.bar}>
+                    <Pressable
+                      onPress={() => {
+                        Keyboard.dismiss(); // otherwise the open keyboard covers the menu
+                        setAttachOpen((o) => !o);
+                      }}
+                      hitSlop={8}
+                      accessibilityLabel={attachOpen ? "Close attach menu" : "Attach a photo"}
+                      accessibilityState={{ expanded: attachOpen }}
+                    >
+                      <Feather name={attachOpen ? "x" : "paperclip"} size={17} color="#000" />
+                    </Pressable>
+                    <TextInput
+                      ref={input}
+                      onFocus={() => setAttachOpen(false)}
+                      value={text}
+                      onChangeText={setText}
+                      onSubmitEditing={() => send()}
+                      placeholder={home ? "Describe the problem..." : result ? "Ask a follow-up..." : "Add more details..."}
+                      placeholderTextColor="rgba(0,0,0,0.2)"
+                      accessibilityLabel="Message"
+                      style={s.input}
+                    />
+                    <Pressable onPress={() => send()} disabled={busy || out} style={[s.send, (busy || out) && s.disabled]} accessibilityLabel="Send">
+                      <Feather name="arrow-up" size={18} color="#fff" />
+                    </Pressable>
+                  </View>
+                </>
+              )}
+            </View>
+            {/* Floats over the page just above the message bar, so nothing else moves. It's a child of this
+                full-screen view rather than the footer: Android ignores taps outside a parent's bounds. */}
+            {attachOpen && (
+              <Pop from="left" style={s.attachMenu}>
+                <Pressable onPress={() => attach(true)} style={s.attachItem} accessibilityRole="button">
+                  <Feather name="camera" size={17} color="#000" />
+                  <Text style={s.attachText}>Take a photo</Text>
+                </Pressable>
+                <Pressable onPress={() => attach(false)} style={s.attachItem} accessibilityRole="button">
+                  <Feather name="image" size={17} color="#000" />
+                  <Text style={s.attachText}>Choose from gallery</Text>
+                </Pressable>
+              </Pop>
+            )}
+          </KeyboardAvoidingView>
+        )}
+      </BlurTargetView>
       {/* One bar for all three tabs, so its pill can morph from tab to tab instead of being redrawn. */}
-      {signedIn && !setup && tab !== "home" && <TabBar active={tab} onTab={setTab} />}
+      {signedIn && !setup && tab !== "home" && <TabBar active={tab} onTab={setTab} target={glassTarget} />}
       {start && <StartPage onDone={() => setStart(false)} />}
     </SafeAreaView>
   );
@@ -1151,30 +1157,68 @@ function AddGadget({ onAdd, onCancel }: { onAdd: (g: Gadget) => void; onCancel: 
 
 // Bottom bar: Home on its own, then a black pill with My gadgets, History and Profile; the current one is white.
 type Tab = "home" | "gadgets" | "history" | "profile";
-const TABS: { tab: Tab; icon: FeatherName; label: string }[] = [
-  { tab: "gadgets", icon: "smartphone", label: "My gadgets" },
-  { tab: "history", icon: "clock", label: "History" },
-  { tab: "profile", icon: "user", label: "Profile" },
+// Solid icons, all from Material Community Icons so they share one style (Feather, used elsewhere in the app, only
+// has outlines; Ionicons' phone is an outline and its house a different shape from its clock and person).
+// "solid-phone" is drawn in code: every phone icon in the installed sets has a cut-out screen.
+const TABS: { tab: Tab; icon: keyof typeof MaterialCommunityIcons.glyphMap | "solid-phone"; label: string; short: string }[] = [
+  { tab: "gadgets", icon: "solid-phone", label: "My gadgets", short: "Gadgets" },
+  { tab: "history", icon: "clock", label: "History", short: "History" },
+  { tab: "profile", icon: "account", label: "Profile", short: "Profile" },
 ];
 
-const PILL_W = 88; // the white pill's width, from the mockup
+// Apple's own Liquid Glass material exists on iOS 26+ (the second check guards betas that lack the API and crash).
+const NATIVE_GLASS = Platform.OS === "ios" && isLiquidGlassAvailable() && isGlassEffectAPIAvailable();
 
-// The white pill morphs between tabs: the edge facing the new tab springs out first and the trailing edge
-// follows more slowly, so it stretches toward the tab, then settles to its size there.
-function TabBar({ active, onTab }: { active: Tab; onTab: (t: Tab) => void }) {
-  const [w, setW] = useState(0); // the black pill's width
+// One piece of Liquid Glass. On iOS 26 it's Apple's real material (lensing, and it lifts when touched).
+// Elsewhere it's drawn to match: a light blur of the page behind (Android reads it from `target`, the page wrapped
+// in a BlurTargetView), almost no tint, a rim that catches light along the top edge, and a sheen that fades fast.
+function Glass({ target, style, children, onLayout }: { target: RefObject<View | null>; style?: ComponentProps<typeof View>["style"]; children: ReactNode; onLayout?: ComponentProps<typeof View>["onLayout"] }) {
+  if (NATIVE_GLASS) {
+    return (
+      <GlassView glassEffectStyle="regular" isInteractive colorScheme="light" style={[s.glassNative, style]} onLayout={onLayout}>
+        {children}
+      </GlassView>
+    );
+  }
+  return (
+    // The 1pt gradient behind the content shows only around the edge: that's the rim.
+    <LinearGradient
+      colors={["rgba(255,255,255,0.95)", "rgba(255,255,255,0.35)", "rgba(255,255,255,0.15)", "rgba(255,255,255,0.6)"]}
+      locations={[0, 0.35, 0.7, 1]}
+      style={s.glassRim}
+    >
+      <View style={[s.glass, style]} onLayout={onLayout}>
+        <BlurView intensity={28} tint="light" blurTarget={target} blurMethod="dimezisBlurViewSdk31Plus" style={StyleSheet.absoluteFill} />
+        <LinearGradient
+          pointerEvents="none"
+          colors={["rgba(255,255,255,0.55)", "rgba(255,255,255,0.08)", "rgba(255,255,255,0)", "rgba(255,255,255,0.18)"]}
+          locations={[0, 0.3, 0.7, 1]}
+          style={StyleSheet.absoluteFill}
+        />
+        {children}
+      </View>
+    </LinearGradient>
+  );
+}
+
+// Bottom bar, floating over the page in glass: Home on its own, then My gadgets, History and Profile. The current
+// tab sits under a brighter glass lens that morphs between tabs: the edge facing the new tab springs out first and
+// the trailing edge follows, so it stretches toward the tab, then settles.
+function TabBar({ active, onTab, target }: { active: Tab; onTab: (t: Tab) => void; target: RefObject<View | null> }) {
+  const [w, setW] = useState(0); // the tab pill's width
   const left = useRef(new Animated.Value(0)).current;
   const right = useRef(new Animated.Value(0)).current;
-  const placed = useRef(-1); // tab index the pill sits at; -1 until first laid out
+  const placed = useRef(-1); // tab index the lens sits at; -1 until first laid out
   const i = TABS.findIndex((t) => t.tab === active);
 
   useEffect(() => {
     if (!w) return;
-    const slot = (w - 14) / TABS.length; // three equal slots inside the 7pt padding
-    const l = 7 + i * slot + (slot - PILL_W) / 2;
+    const slot = (w - 12) / TABS.length; // three equal slots inside the 6pt padding
+    const l = 6 + i * slot + 2;
+    const r = l + slot - 4;
     if (placed.current < 0) {
       left.setValue(l);
-      right.setValue(l + PILL_W);
+      right.setValue(r);
     } else if (placed.current !== i) {
       const forward = i > placed.current;
       const lead = { tension: 220, friction: 20 };
@@ -1182,27 +1226,39 @@ function TabBar({ active, onTab }: { active: Tab; onTab: (t: Tab) => void }) {
       // Layout props (left, width) can't use the native driver.
       Animated.parallel([
         Animated.spring(left, { toValue: l, ...(forward ? trail : lead), useNativeDriver: false }),
-        Animated.spring(right, { toValue: l + PILL_W, ...(forward ? lead : trail), useNativeDriver: false }),
+        Animated.spring(right, { toValue: r, ...(forward ? lead : trail), useNativeDriver: false }),
       ]).start();
     }
     placed.current = i;
   }, [w, i, left, right]);
 
   return (
-    <View style={s.tabBar}>
-      <Pressable onPress={() => onTab("home")} style={s.tabHome} accessibilityLabel="Home">
-        <Feather name="home" size={22} color="#000" />
+    <View style={s.tabBar} pointerEvents="box-none">
+      <Pressable onPress={() => onTab("home")} style={s.glassShadow} accessibilityLabel="Home">
+        <Glass target={target} style={s.tabHome}>
+          <MaterialCommunityIcons name="home-variant" size={25} color="#000" />
+        </Glass>
       </Pressable>
-      <View style={s.tabPill} onLayout={(e) => setW(e.nativeEvent.layout.width)}>
-        {w > 0 && <Animated.View style={[s.tabMorph, { left, width: Animated.subtract(right, left) }]} />}
-        {TABS.map(({ tab, icon, label }) => {
-          const on = tab === active;
-          return (
-            <Pressable key={label} onPress={() => onTab(tab)} style={s.tabItem} accessibilityLabel={label} accessibilityState={{ selected: on }}>
-              <Feather name={icon} size={22} color={on ? "#000" : "#fff"} />
-            </Pressable>
-          );
-        })}
+      <View style={[s.glassShadow, s.flex]}>
+        <Glass target={target} style={s.tabPill} onLayout={(e) => setW(e.nativeEvent.layout.width)}>
+          {w > 0 && <Animated.View style={[s.tabMorph, { left, width: Animated.subtract(right, left) }]} />}
+          {TABS.map(({ tab, icon, label, short }) => {
+            const on = tab === active;
+            return (
+              <Pressable key={label} onPress={() => onTab(tab)} style={s.tabItem} accessibilityLabel={label} accessibilityState={{ selected: on }}>
+                {/* The current tab's icon turns the app's green; the label stays dark so it stays readable. */}
+                {icon === "solid-phone" ? (
+                  <View style={s.tabIconBox}>
+                    <View style={[s.solidPhone, { backgroundColor: on ? GREEN : "rgba(0,0,0,0.7)" }]} />
+                  </View>
+                ) : (
+                  <MaterialCommunityIcons name={icon} size={24} color={on ? GREEN : "rgba(0,0,0,0.7)"} />
+                )}
+                <Text style={[s.tabLabel, on && s.tabLabelOn]}>{short}</Text>
+              </Pressable>
+            );
+          })}
+        </Glass>
       </View>
     </View>
   );
@@ -3200,12 +3256,22 @@ const s = StyleSheet.create({
   gKindText: { fontFamily: "Poppins_500Medium", fontSize: 11, color: "#000" },
   gAddActions: { flexDirection: "row", gap: 10, marginTop: 18 },
   gAddBtn: { flex: 1, height: 52 },
-  gList: { paddingHorizontal: 20, paddingTop: 15, paddingBottom: 20 },
-  tabBar: { flexDirection: "row", gap: 10, paddingHorizontal: 20, paddingBottom: 20, paddingTop: 8 },
-  tabHome: { width: 59, height: 59, borderRadius: 100, backgroundColor: "#fff", alignItems: "center", justifyContent: "center" },
-  tabPill: { flex: 1, flexDirection: "row", height: 59, padding: 7, borderRadius: 100, backgroundColor: "#000" },
-  tabMorph: { position: "absolute", top: 7, bottom: 7, borderRadius: 100, backgroundColor: "#fff" },
-  tabItem: { flex: 1, alignItems: "center", justifyContent: "center" },
+  gList: { paddingHorizontal: 20, paddingTop: 15, paddingBottom: 110 }, // room to scroll clear of the floating tab bar
+  // Floats over the page, so the page shows through the glass.
+  tabBar: { position: "absolute", left: 0, right: 0, bottom: 0, flexDirection: "row", gap: 10, paddingHorizontal: 16, paddingBottom: 18 },
+  tabHome: { width: 64, height: 64, alignItems: "center", justifyContent: "center" },
+  tabPill: { flexDirection: "row", height: 64, padding: 6 },
+  // The selected tab's lens: brighter glass with its own rim.
+  tabMorph: { position: "absolute", top: 6, bottom: 6, borderRadius: 100, backgroundColor: "rgba(0,0,0,0.07)" },
+  tabItem: { flex: 1, alignItems: "center", justifyContent: "center", gap: 2 },
+  tabIconBox: { width: 24, height: 24, alignItems: "center", justifyContent: "center" },
+  solidPhone: { width: 14, height: 21, borderRadius: 4 }, // a phone silhouette, matched to the solid clock and person
+  tabLabel: { fontFamily: "Poppins_500Medium", fontSize: 10, lineHeight: 13, color: "rgba(0,0,0,0.7)" },
+  tabLabelOn: { fontFamily: "Poppins_600SemiBold", color: "#000" },
+  glassRim: { borderRadius: 100, padding: 1 },
+  glass: { overflow: "hidden", borderRadius: 100, backgroundColor: "rgba(255,255,255,0.12)" },
+  glassNative: { borderRadius: 100, overflow: "hidden" },
+  glassShadow: { borderRadius: 100, shadowColor: "#000", shadowOpacity: 0.1, shadowRadius: 24, shadowOffset: { width: 0, height: 10 } },
   // Profile, measured from the mockup.
   pPage: { paddingTop: 0 },
   pTitle: { textAlign: "center", marginTop: 26, marginBottom: 22 },
