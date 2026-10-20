@@ -179,10 +179,23 @@ export async function POST(req: Request) {
     const messages = Array.isArray(body) ? body : body.messages;
     const language: string | undefined = Array.isArray(body) ? undefined : body.language;
     // Field names and the fixed choices (kind, category, difficulty, risk...) stay English: the app reads them.
-    const system =
-      language && language !== "English"
-        ? `${SYSTEM}\nWrite all text meant for the user (messages, questions, answer options, titles, details) in ${language}.`
-        : SYSTEM;
+    // From the new-account questions. Clipped, since they're inserted into the system prompt.
+    const profile = Array.isArray(body) ? undefined : body.profile;
+    const skill = typeof profile?.skill === "string" ? profile.skill.slice(0, 60) : "";
+    const devices = Array.isArray(profile?.devices) ? profile.devices.slice(0, 10).map((d: unknown) => String(d).slice(0, 30)) : [];
+    // "Check this gadget" in the app: the chat is about this one device.
+    const gadget = profile?.gadget && typeof profile.gadget.name === "string" ? profile.gadget : undefined;
+    const system = [
+      SYSTEM,
+      language && language !== "English" &&
+        `Write all text meant for the user (messages, questions, answer options, titles, details) in ${language}.`,
+      skill && `The user describes their repair experience as "${skill}": match the detail of the steps and the safety warnings to that.`,
+      devices.length && `Gadgets the user owns: ${devices.join(", ")}.`,
+      gadget &&
+        `The user is asking about their ${String(gadget.kind ?? "device").slice(0, 30)} "${gadget.name.slice(0, 40)}": use that as the device.`,
+    ]
+      .filter(Boolean)
+      .join("\n");
     let error = "";
     const tried: string[] = []; // failed attempts, reported in the x-tried header
     models: for (const { url, env, model, extra, wait } of MODELS) {

@@ -5,7 +5,6 @@ import {
   Easing,
   Image,
   Keyboard,
-  KeyboardAvoidingView,
   Linking,
   PanResponder,
   Platform,
@@ -22,6 +21,8 @@ import {
   useWindowDimensions,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+// Moves with the keyboard as it slides on phones (see lib/keyboard.tsx).
+import { KeyboardAvoidingView } from "../lib/keyboard";
 import { StatusBar } from "expo-status-bar";
 import * as ImagePicker from "expo-image-picker";
 import { Feather } from "@expo/vector-icons";
@@ -82,6 +83,7 @@ type Turn =
       diagnosis?: Diagnosis; // set on the verdict turn; shown on the Diagnosis page
       seconds?: number; // how long the diagnosis request took
       saved?: boolean;
+      check?: string; // id of the History check this verdict was saved as
     };
 type Part = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
 // Diagnosing screen state. stage = the 1-based checklist row in progress; 5 = all done.
@@ -131,7 +133,34 @@ export default function App() {
   // The Firebase account; undefined while Firebase is still restoring a saved sign-in.
   const [user, setUser] = useState<User | null | undefined>(firebaseReady ? undefined : null);
   const signedIn = firebaseReady ? !!user : welcomed;
+  // Gadgets are kept per account on this device, so a new account starts with none.
+  const gadgetsKey = `${GADGETS_KEY}-${user?.uid ?? "offline"}`;
+  const [gadgets, setGadgets] = useState<Gadget[]>([]);
+  useEffect(() => setGadgets(loadGadgets(gadgetsKey)), [gadgetsKey]);
+  const saveGadgets = (list: Gadget[]) => {
+    setGadgets(list);
+    save(gadgetsKey, JSON.stringify(list));
+  };
+  const historyKey = `${HISTORY_KEY}-${user?.uid ?? "offline"}`;
+  const [history, setHistory] = useState<Check[]>([]);
+  useEffect(() => {
+    try {
+      const list = JSON.parse(load(historyKey) ?? "[]");
+      setHistory(Array.isArray(list) ? list : []);
+    } catch {
+      setHistory([]);
+    }
+  }, [historyKey]);
+  const saveHistory = (list: Check[]) => {
+    setHistory(list);
+    save(historyKey, JSON.stringify(list));
+  };
+  const [forGadget, setForGadget] = useState<Gadget | null>(null); // "Check this gadget": the chat is about this one
+  // A finished diagnosis that matched no gadget, waiting for "Which gadget is this?".
+  const [filing, setFiling] = useState<{ turn: number; check: Omit<Check, "id" | "gadget">; device?: string; kind: string } | null>(null);
+  const [askFixed, setAskFixed] = useState<string | null>(null); // check id for "Did the repair work?"
   const [authMode, setAuthMode] = useState<AuthMode | null>(null); // Sign in / Create account, opened from Welcome
+  const [setup, setSetup] = useState(false); // the new-account questions, shown once after Create account
   const [turns, setTurns] = useState<Turn[]>([]);
   const [text, setText] = useState("");
   const [image, setImage] = useState<string | null>(null); // data URL
@@ -198,8 +227,19 @@ export default function App() {
     if (url) setImage(url);
   }
 
+  // Saves a finished diagnosis as a check on a gadget, and remembers it on the verdict turn.
+  function fileCheck(turn: number, gadget: string, check: Omit<Check, "id" | "gadget">, list = history) {
+    const id = Date.now().toString(36);
+    saveHistory([...list, { id, gadget, ...check }]);
+    setTurns((ts) => ts.map((t, i) => (i === turn && t.role === "assistant" ? { ...t, check: id } : t)));
+    setFiling(null);
+  }
+
   function reset() {
     if (busy) return;
+    setForGadget(null);
+    setFiling(null);
+    setAskFixed(null);
     setTurns([]);
     setImage(null);
     setText("");
@@ -219,7 +259,13 @@ export default function App() {
     if (!firebaseReady) return;
     return onAuthStateChanged(firebaseAuth(), (u) => {
       setUser(u);
-      if (u) updateSettings({ email: u.email ?? "", name: u.displayName ?? "" });
+      if (!u) return;
+      updateSettings({ email: u.email ?? "", name: u.displayName ?? "" });
+      // A brand-new account (first sign-in = creation) that hasn't answered the questions yet. Closing the app
+      // halfway brings them back next time, since the session is restored rather than signed in again.
+      const created = Date.parse(u.metadata.creationTime ?? "");
+      const lastIn = Date.parse(u.metadata.lastSignInTime ?? "");
+      if (Math.abs(lastIn - created) < 60_000 && load(`${SETUP_KEY}-${u.uid}`) !== "done") setSetup(true);
     });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps -- subscribe once
 
@@ -291,7 +337,15 @@ export default function App() {
       const r = await apiFetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: toApi(next), language: settings.language }),
+        body: JSON.stringify({
+          messages: toApi(next),
+          language: settings.language,
+          profile: {
+            skill: settings.skill,
+            devices: settings.devices,
+            gadget: forGadget ? { name: forGadget.name, kind: forGadget.kind } : undefined,
+          },
+        }),
         signal: ctrl.signal,
       });
       const data = await r.json();
@@ -329,6 +383,16 @@ export default function App() {
       if (data.diagnosis) {
         openResult(next.length);
         if (settings.reminders) remindLater(data.device, data.diagnosis.summary);
+        const check = {
+          date: todayYmd(),
+          title: data.diagnosis.summary,
+          detail: data.diagnosis.title,
+          status: (data.diagnosis.difficulty === "Pro repair" ? "pro" : "checked") as CheckStatus,
+        };
+        // The gadget picked with "Check this gadget", else the one the AI's device name matches; otherwise ask.
+        const target = forGadget ?? matchGadget(gadgets, data.device);
+        if (target) fileCheck(next.length, target.id, check);
+        else setFiling({ turn: next.length, check, device: data.device, kind: KIND_FROM_AI[data.deviceType ?? ""] ?? "Phone" });
       }
     } catch (err) {
       if (id !== run.current) return; // cancelled; cancel() already restored the screen
@@ -374,20 +438,47 @@ export default function App() {
             key={authMode}
             initial={authMode}
             onBack={() => setAuthMode(null)}
-            onDone={() => {
+            onDone={(created) => {
               save(WELCOMED, "yes");
               setWelcomed(true);
+              if (created) setSetup(true); // offline sign-in: Firebase's listener handles this otherwise
             }}
           />
         ) : (
           <Welcome onStart={() => setAuthMode("register")} onSignIn={() => setAuthMode("signin")} />
         )
+      ) : setup ? (
+        <Setup
+          settings={settings}
+          onFinish={(patch) => {
+            updateSettings(patch);
+            if (user && patch.name !== undefined) updateProfile(user, { displayName: patch.name }).catch(() => {});
+            save(`${SETUP_KEY}-${user?.uid ?? "offline"}`, "done");
+            setSetup(false);
+            setTab("home");
+          }}
+        />
       ) : tab === "gadgets" ? (
-        <Gadgets />
+        <Gadgets
+          gadgets={gadgets}
+          history={history}
+          onChange={(list) => {
+            saveGadgets(list);
+            saveHistory(history.filter((c) => list.some((g) => g.id === c.gadget))); // a removed gadget's checks go too
+          }}
+          onCheck={(g) => {
+            reset();
+            setForGadget(g);
+            setTab("home");
+          }}
+        />
       ) : tab === "history" ? (
-        <History />
+        <History gadgets={gadgets} history={history} />
       ) : tab === "profile" ? (
         <Profile
+          gadgetCount={gadgets.length}
+          checkCount={history.length}
+          fixedCount={history.filter((c) => c.status === "fixed").length}
           settings={settings}
           onChange={updateSettings}
           user={user ?? null}
@@ -398,20 +489,57 @@ export default function App() {
             setUsed(0);
             save(SETTINGS_KEY, "{}");
             setSettings(DEFAULT_SETTINGS);
+            saveGadgets([]);
+            saveHistory([]);
             leave();
           }}
         />
       ) : diag ? (
         <Diagnosing d={diag} onCancel={cancel} />
       ) : result && guideStep !== null ? (
-        <Guide d={result.diagnosis!} step={guideStep} onStep={setGuideStep} onClose={() => setGuideStep(null)} />
+        <Guide
+          d={result.diagnosis!}
+          step={guideStep}
+          onStep={setGuideStep}
+          onClose={(finished) => {
+            setGuideStep(null);
+            const c = history.find((h) => h.id === result.check);
+            if (finished && c && c.status !== "fixed") setAskFixed(c.id);
+          }}
+        />
       ) : result && showShops ? (
         <Shops t={result} region={settings.region} onBack={() => setShowShops(false)} />
       ) : (
-        <KeyboardAvoidingView style={s.flex} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+        <KeyboardAvoidingView style={s.flex} behavior="padding">
           {home && !result && <DotGlow />}
           {result ? (
-            <Result t={result} onBack={() => setResultIdx(null)} />
+            <Result
+              t={result}
+              onBack={() => setResultIdx(null)}
+              top={
+                filing && filing.turn === resultIdx ? (
+                  <FileCheck
+                    device={filing.device}
+                    gadgets={gadgets}
+                    onPick={(g) => fileCheck(filing.turn, g.id, filing.check)}
+                    onAdd={() => {
+                      const g = newGadget(filing.device || "My device", filing.kind);
+                      saveGadgets([g, ...gadgets]);
+                      fileCheck(filing.turn, g.id, filing.check);
+                    }}
+                    onSkip={() => setFiling(null)}
+                  />
+                ) : askFixed && askFixed === result.check ? (
+                  <AskFixed
+                    gadget={gadgets.find((g) => g.id === history.find((c) => c.id === askFixed)?.gadget)?.name}
+                    onAnswer={(fixed) => {
+                      if (fixed) saveHistory(history.map((c) => (c.id === askFixed ? { ...c, status: "fixed" } : c)));
+                      setAskFixed(null);
+                    }}
+                  />
+                ) : undefined
+              }
+            />
           ) : home ? (
             <>
               <View style={s.header}>
@@ -540,6 +668,17 @@ export default function App() {
             ) : (
               <>
                 {!result && <Usage used={used} />}
+                {forGadget && !result && (
+                  <View style={s.forTag}>
+                    <Feather name={kindIcon(forGadget.kind)} size={16} color="#000" />
+                    <Text style={s.forTagText} numberOfLines={1}>
+                      Checking your {forGadget.name}
+                    </Text>
+                    <Pressable onPress={() => setForGadget(null)} hitSlop={10} accessibilityLabel="Stop checking this gadget">
+                      <Feather name="x" size={16} color="rgba(0,0,0,0.5)" />
+                    </Pressable>
+                  </View>
+                )}
                 {result ? (
                   <View style={[s.actions, s.actionsGap]}>
                     <Pressable onPress={() => setGuideStep(0)} style={s.guideBtn} accessibilityRole="button">
@@ -606,7 +745,7 @@ export default function App() {
         </KeyboardAvoidingView>
       )}
       {/* One bar for all three tabs, so its pill can morph from tab to tab instead of being redrawn. */}
-      {signedIn && tab !== "home" && <TabBar active={tab} onTab={setTab} />}
+      {signedIn && !setup && tab !== "home" && <TabBar active={tab} onTab={setTab} />}
       {start && <StartPage onDone={() => setStart(false)} />}
     </SafeAreaView>
   );
@@ -718,94 +857,295 @@ function Welcome({ onStart, onSignIn }: { onStart: () => void; onSignIn: () => v
   );
 }
 
-// My gadgets: the user's devices, with search and type filters, plus the bottom tab bar.
-// ponytail: registering and saving gadgets isn't built yet, so the list is empty and the + and
-// "Register a gadget" buttons do nothing. Every account starts with no gadgets.
-type Gadget = { id: string; name: string; type: "phone" | "laptop"; issue: string; checks: number; last: string; status: string };
-const GADGETS: Gadget[] = [];
-const GADGET_FILTERS = [
-  { label: "All", type: null },
-  { label: "Phones", type: "phone" },
-  { label: "Laptops", type: "laptop" },
-] as const;
+// My gadgets: the devices the user owns, saved on the device per account (a new account starts empty).
+// With no gadgets the page is one focused empty state; search and filters appear once there's something to find.
+// A gadget's checks live in History; its card shows the latest one (issue, status) and the count.
+type Gadget = { id: string; name: string; kind: string; added: string };
+const GADGETS_KEY = "gadgets";
+function loadGadgets(key: string): Gadget[] {
+  try {
+    const list = JSON.parse(load(key) ?? "[]");
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+const kindIcon = (kind: string): FeatherName => DEVICE_KINDS.find((k) => k.label === kind)?.icon ?? "box";
+// Date-only strings are read as local dates (new Date("2026-10-20") would be UTC midnight).
+const shortDate = (iso: string) =>
+  new Date(iso.length === 10 ? `${iso}T00:00:00` : iso).toLocaleDateString([], { month: "short", day: "numeric" });
+const todayYmd = () => {
+  const d = new Date();
+  return ymd(d.getFullYear(), d.getMonth(), d.getDate());
+};
+// The AI's deviceType, as one of the gadget types.
+const KIND_FROM_AI: Record<string, string> = {
+  phone: "Phone",
+  tablet: "Tablet",
+  laptop: "Laptop",
+  desktop: "Desktop PC",
+  tv: "TV",
+  watch: "Smartwatch",
+  headphones: "Headphones",
+};
+// The gadget the AI's device name points to: one whose name contains it or is contained in it, if exactly one does.
+function matchGadget(gadgets: Gadget[], device?: string): Gadget | undefined {
+  const norm = (t: string) => t.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const d = norm(device ?? "");
+  if (d.length < 3) return undefined;
+  const exact = gadgets.filter((g) => norm(g.name) === d);
+  if (exact.length === 1) return exact[0]; // "iPhone 13 Pro" beats "iPhone 13"
+  const hits = gadgets.filter((g) => {
+    const n = norm(g.name);
+    return n.length >= 3 && (n.includes(d) || d.includes(n));
+  });
+  return hits.length === 1 ? hits[0] : undefined;
+}
+const newGadget = (name: string, kind: string): Gadget => ({
+  id: Date.now().toString(36),
+  name,
+  kind,
+  added: new Date().toISOString(),
+});
 
-function Gadgets() {
+// Status colours carry meaning: green = fixed, black = needs a pro, grey = checked or new.
+const STATUS_PILL: Record<CheckStatus | "new", { label: string; icon?: FeatherName; style: object; text?: object }> = {
+  fixed: { label: "Fixed", icon: "check", style: { backgroundColor: GREEN } },
+  checked: { label: "Checked", style: { backgroundColor: "#EDEDED" } },
+  pro: { label: "Needs a pro", icon: "alert-triangle", style: { backgroundColor: "#000" }, text: { color: "#fff" } },
+  new: { label: "New", style: { backgroundColor: "#F3F3F3" }, text: { color: "rgba(0,0,0,0.55)" } },
+};
+
+function Gadgets({
+  gadgets,
+  history,
+  onChange,
+  onCheck,
+}: {
+  gadgets: Gadget[];
+  history: Check[];
+  onChange: (list: Gadget[]) => void;
+  onCheck: (g: Gadget) => void;
+}) {
+  // Each gadget's checks, oldest first; the last one is the gadget's current issue and status.
+  const checksOf = (id: string) => history.filter((c) => c.gadget === id).sort((a, b) => a.date.localeCompare(b.date));
+  const latest = (id: string) => checksOf(id).at(-1);
   const [query, setQuery] = useState("");
-  const [type, setType] = useState<Gadget["type"] | null>(null);
+  const [kind, setKind] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [open, setOpen] = useState<string | null>(null); // card showing its Remove action
+  const [confirm, setConfirm] = useState(false);
   const q = query.trim().toLowerCase();
-  const shown = GADGETS.filter(
-    (g) => (!type || g.type === type) && (!q || `${g.name} ${g.issue}`.toLowerCase().includes(q)),
+  const kinds = DEVICE_KINDS.filter((k) => gadgets.some((g) => g.kind === k.label));
+  const shown = gadgets.filter(
+    (g) => (!kind || g.kind === kind) && (!q || `${g.name} ${g.kind} ${latest(g.id)?.title ?? ""}`.toLowerCase().includes(q)),
   );
+  const pro = gadgets.filter((g) => latest(g.id)?.status === "pro").length;
+  const summary = !gadgets.length
+    ? "Every device you own, in one place"
+    : `${gadgets.length} gadget${gadgets.length === 1 ? "" : "s"}${pro ? ` · ${pro} need${pro === 1 ? "s" : ""} a pro` : ""}`;
+
+  const toggle = (id: string) => {
+    setOpen(open === id ? null : id);
+    setConfirm(false);
+  };
+  const remove = (id: string) => {
+    onChange(gadgets.filter((g) => g.id !== id));
+    setOpen(null);
+    setConfirm(false);
+    if (kind && !gadgets.some((g) => g.id !== id && g.kind === kind)) setKind(null);
+  };
 
   return (
     <View style={s.flex}>
       <View style={s.gHeader}>
-        <View>
+        <View style={s.flex}>
           <Text style={s.gTitle}>My gadgets</Text>
-          <Text style={s.gCount}>{GADGETS.length} registered</Text>
+          <Text style={s.gCount}>{summary}</Text>
         </View>
-        <Pressable style={[s.circle, s.gAdd]} accessibilityLabel="Register a gadget">
-          <Feather name="plus" size={22} color={GREEN} />
-        </Pressable>
+        {gadgets.length > 0 && (
+          <Pressable onPress={() => setAdding(true)} style={[s.circle, s.gAdd]} accessibilityLabel="Add a gadget">
+            <Feather name="plus" size={22} color={GREEN} />
+          </Pressable>
+        )}
       </View>
 
       <ScrollView style={s.flex} contentContainerStyle={s.gList} keyboardShouldPersistTaps="handled">
-        <View style={s.gSearch}>
-          <Feather name="search" size={20} color="#000" />
-          <TextInput
-            value={query}
-            onChangeText={setQuery}
-            placeholder="Search your gadgets"
-            placeholderTextColor="rgba(0,0,0,0.2)"
-            accessibilityLabel="Search your gadgets"
-            style={s.gSearchInput}
+        {adding && (
+          <AddGadget
+            onCancel={() => setAdding(false)}
+            onAdd={(g) => {
+              onChange([g, ...gadgets]);
+              setAdding(false);
+            }}
           />
-        </View>
-
-        <View style={s.gFilters}>
-          {GADGET_FILTERS.map((f) => {
-            const on = type === f.type;
-            return (
-              <Pressable key={f.label} onPress={() => setType(f.type)} style={[s.gChip, on && s.filterOn]} accessibilityState={{ selected: on }}>
-                <Text style={[s.gChipText, on && s.tagTextLight]}>{f.label}</Text>
-              </Pressable>
-            );
-          })}
-        </View>
-
-        {shown.map((g) => (
-          <View key={g.id} style={s.gCard}>
-            <View style={s.gIcon}>
-              <Feather name={g.type === "laptop" ? "monitor" : "smartphone"} size={26} color="#fff" />
-            </View>
-            <View style={s.gText}>
-              <Text style={s.gName} numberOfLines={1}>
-                {g.name}
-              </Text>
-              <Text style={s.gIssue} numberOfLines={1}>
-                {g.issue}
-              </Text>
-              <Text style={s.gMeta}>
-                {g.checks} CHECKS · LAST {g.last.toUpperCase()}
-              </Text>
-            </View>
-            <View style={s.gStatus}>
-              <Feather name="check" size={14} color="#000" />
-              <Text style={s.gStatusText}>{g.status}</Text>
-            </View>
-          </View>
-        ))}
-        {!shown.length && (
-          <Text style={[s.msgText, s.dim, s.gEmpty]}>{GADGETS.length ? "No gadgets match." : "No gadgets yet."}</Text>
         )}
 
-        <Pressable style={s.gRegister} accessibilityRole="button">
-          <Feather name="plus" size={20} color="#000" />
-          <Text style={s.gRegisterText}>Register a gadget</Text>
-        </Pressable>
-      </ScrollView>
+        {!gadgets.length && !adding && (
+          <View style={s.gEmptyCard}>
+            {/* A small cluster of devices: the one image on an otherwise quiet page. */}
+            <View style={s.gHero}>
+              <View style={[s.gHeroIcon, s.gHeroSide]}>
+                <Feather name="watch" size={22} color="#000" />
+              </View>
+              <View style={[s.gHeroIcon, s.gHeroMain]}>
+                <Feather name="smartphone" size={30} color={GREEN} />
+              </View>
+              <View style={[s.gHeroIcon, s.gHeroSide]}>
+                <Feather name="monitor" size={22} color="#000" />
+              </View>
+            </View>
+            <Text style={s.gEmptyTitle}>No gadgets yet</Text>
+            <Text style={s.gEmptyBody}>Add the phones, laptops and other devices you own, so their repairs stay organised.</Text>
+            <Pressable onPress={() => setAdding(true)} style={[s.welcomeBtn, s.gEmptyBtn]} accessibilityRole="button">
+              <Feather name="plus" size={20} color={GREEN} />
+              <Text style={s.welcomeBtnText}>Add your first gadget</Text>
+            </Pressable>
+          </View>
+        )}
 
+        {gadgets.length > 0 && (
+          <>
+            <View style={s.gSearch}>
+              <Feather name="search" size={19} color="rgba(0,0,0,0.45)" />
+              <TextInput
+                value={query}
+                onChangeText={setQuery}
+                placeholder="Search your gadgets"
+                placeholderTextColor="rgba(0,0,0,0.3)"
+                accessibilityLabel="Search your gadgets"
+                style={s.gSearchInput}
+              />
+              {!!query && (
+                <Pressable onPress={() => setQuery("")} hitSlop={10} accessibilityLabel="Clear search">
+                  <Feather name="x" size={18} color="rgba(0,0,0,0.45)" />
+                </Pressable>
+              )}
+            </View>
+
+            {kinds.length > 1 && (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.gFilters} contentContainerStyle={s.gFilterRow}>
+                {[{ label: "All", n: gadgets.length, value: null as string | null }, ...kinds.map((k) => ({ label: k.label, n: gadgets.filter((g) => g.kind === k.label).length, value: k.label }))].map(
+                  (f) => {
+                    const on = kind === f.value;
+                    return (
+                      <Pressable key={f.label} onPress={() => setKind(f.value)} style={[s.gChip, on && s.filterOn]} accessibilityState={{ selected: on }}>
+                        <Text style={[s.gChipText, on && s.tagTextLight]}>{f.label}</Text>
+                        <View style={[s.gChipCount, on && s.gChipCountOn]}>
+                          <Text style={[s.gChipCountText, on && s.gChipCountTextOn]}>{f.n}</Text>
+                        </View>
+                      </Pressable>
+                    );
+                  },
+                )}
+              </ScrollView>
+            )}
+
+            {shown.map((g) => {
+              const checks = checksOf(g.id);
+              const last = checks.at(-1);
+              const pill = STATUS_PILL[last?.status ?? "new"];
+              const isOpen = open === g.id;
+              return (
+                <Pressable key={g.id} onPress={() => toggle(g.id)} style={s.gCard} accessibilityRole="button" accessibilityState={{ expanded: isOpen }}>
+                  <View style={s.gTop}>
+                    <View style={s.gIcon}>
+                      <Feather name={kindIcon(g.kind)} size={24} color="#000" />
+                    </View>
+                    <View style={s.gText}>
+                      <Text style={s.gName} numberOfLines={1}>
+                        {g.name}
+                      </Text>
+                      <Text style={s.gKind}>{g.kind}</Text>
+                    </View>
+                    <View style={[s.gStatus, pill.style]}>
+                      {pill.icon && <Feather name={pill.icon} size={13} color={pill.text ? "#fff" : "#000"} />}
+                      <Text style={[s.gStatusText, pill.text]}>{pill.label}</Text>
+                    </View>
+                  </View>
+                  <View style={s.gDivider} />
+                  <View style={s.gFoot}>
+                    <Text style={s.gIssue} numberOfLines={1}>
+                      {last?.title ?? "No checks yet"}
+                    </Text>
+                    <Text style={s.gMeta}>
+                      {last ? `${checks.length} check${checks.length === 1 ? "" : "s"} · ${shortDate(last.date)}` : `Added ${shortDate(g.added)}`}
+                    </Text>
+                  </View>
+                  {isOpen && (
+                    <>
+                      <Pressable onPress={() => onCheck(g)} style={[s.welcomeBtn, s.gCheckBtn]} accessibilityRole="button">
+                        <Feather name="search" size={18} color={GREEN} />
+                        <Text style={s.welcomeBtnText}>Check this gadget</Text>
+                      </Pressable>
+                      {/* Two taps instead of a dialog: Alert has no buttons on web. */}
+                      <Pressable onPress={() => (confirm ? remove(g.id) : setConfirm(true))} style={s.gRemove} accessibilityRole="button">
+                        <Feather name="trash-2" size={17} color="#dc2626" />
+                        <Text style={s.gRemoveText}>{confirm ? "Tap again to remove it and its checks" : `Remove ${g.name}`}</Text>
+                      </Pressable>
+                    </>
+                  )}
+                </Pressable>
+              );
+            })}
+            {!shown.length && <Text style={[s.msgText, s.dim, s.gNoMatch]}>No gadgets match "{query || kind}".</Text>}
+          </>
+        )}
+      </ScrollView>
     </View>
+  );
+}
+
+// The add form, inline at the top of My gadgets: a name and one of the device types.
+function AddGadget({ onAdd, onCancel }: { onAdd: (g: Gadget) => void; onCancel: () => void }) {
+  const [name, setName] = useState("");
+  const [kind, setKind] = useState(DEVICE_KINDS[0].label);
+  const [error, setError] = useState("");
+  function add() {
+    if (!name.trim()) return setError("Give it a name, like \"iPhone 13\".");
+    onAdd(newGadget(name.trim(), kind));
+  }
+  return (
+    <Pop from="left" style={s.gAddCard}>
+      <Text style={s.gAddTitle}>Add a gadget</Text>
+      <TextInput
+        value={name}
+        onChangeText={(t) => {
+          setName(t);
+          setError("");
+        }}
+        placeholder="Name, e.g. iPhone 13"
+        placeholderTextColor="rgba(0,0,0,0.3)"
+        autoFocus
+        returnKeyType="done"
+        onSubmitEditing={add}
+        accessibilityLabel="Gadget name"
+        style={[s.authInput, s.gAddInput]}
+      />
+      <Text style={s.gAddLabel}>Type</Text>
+      <View style={s.gKinds}>
+        {DEVICE_KINDS.map((k) => {
+          const on = kind === k.label;
+          return (
+            <Pressable key={k.label} onPress={() => setKind(k.label)} style={[s.gKindTile, on && s.setupOn]} accessibilityRole="radio" accessibilityState={{ checked: on }}>
+              <Feather name={k.icon} size={20} color={on ? "#fff" : "#000"} />
+              <Text style={[s.gKindText, on && s.tagTextLight]} numberOfLines={1}>
+                {k.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+      {!!error && <Text style={s.error}>{error}</Text>}
+      <View style={s.gAddActions}>
+        <Pressable onPress={onCancel} style={[s.googleBtn, s.gAddBtn]} accessibilityRole="button">
+          <Text style={s.googleText}>Cancel</Text>
+        </Pressable>
+        <Pressable onPress={add} style={[s.welcomeBtn, s.gAddBtn]} accessibilityRole="button">
+          <Text style={s.welcomeBtnText}>Add gadget</Text>
+        </Pressable>
+      </View>
+    </Pop>
   );
 }
 
@@ -869,7 +1209,15 @@ function TabBar({ active, onTab }: { active: Tab; onTab: (t: Tab) => void }) {
 }
 
 // Profile and settings, kept on the device. Erase data (Password and security) puts back these defaults.
-type Settings = { name: string; email: string; reminders: boolean; language: string; region: string };
+type Settings = {
+  name: string;
+  email: string;
+  reminders: boolean;
+  language: string;
+  region: string;
+  devices: string[]; // gadget kinds from the new-account questions, passed to the AI as a hint
+  skill: string; // repair experience from the new-account questions; the AI pitches its guides to it
+};
 const SETTINGS_KEY = "settings";
 const DEFAULT_SETTINGS: Settings = {
   name: "",
@@ -877,6 +1225,8 @@ const DEFAULT_SETTINGS: Settings = {
   reminders: true,
   language: "English",
   region: "Metro Manila",
+  devices: [],
+  skill: "",
 };
 function loadSettings(): Settings {
   try {
@@ -923,12 +1273,18 @@ type Row = { icon: FeatherName; label: string; value?: string; onPress: () => vo
 
 // Profile: who's signed in, totals from the gadgets and history, settings and support pages.
 function Profile({
+  gadgetCount,
+  checkCount,
+  fixedCount,
   settings,
   user,
   onChange,
   onSignOut,
   onErase,
 }: {
+  gadgetCount: number;
+  checkCount: number;
+  fixedCount: number;
   settings: Settings;
   user: User | null;
   onChange: (patch: Partial<Settings>) => void;
@@ -944,9 +1300,9 @@ function Profile({
     setNote("");
   };
   const stats = [
-    { n: GADGETS.length, label: "Gadgets" },
-    { n: HISTORY.length, label: "Checks" },
-    { n: HISTORY.filter((c) => c.status === "fixed").length, label: "Fixed Yourself" },
+    { n: gadgetCount, label: "Gadgets" },
+    { n: checkCount, label: "Checks" },
+    { n: fixedCount, label: "Fixed Yourself" },
   ];
 
   async function setReminders(on: boolean) {
@@ -1256,10 +1612,11 @@ function Toggle({ on, onChange, label }: { on: boolean; onChange: (on: boolean) 
 }
 
 // History: a month calendar marking each day's checks for one gadget, and the list of those checks.
-// ponytail: nothing is recorded from real diagnoses yet, so every account starts with an empty history.
+// Checks are saved when a diagnosis finishes (per account, on this device). "fixed" comes from the repair
+// guide's "Did it work?".
 type CheckStatus = "fixed" | "checked" | "pro";
-type Check = { gadget: string; date: string; title: string; detail: string; status: CheckStatus }; // date: YYYY-MM-DD
-const HISTORY: Check[] = [];
+type Check = { id: string; gadget: string; date: string; title: string; detail: string; status: CheckStatus }; // date: YYYY-MM-DD
+const HISTORY_KEY = "history";
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const WEEKDAYS = ["S", "M", "T", "W", "TH", "F", "S"];
 const LEGEND: { status: CheckStatus; label: string }[] = [
@@ -1273,10 +1630,10 @@ function StatusDot({ status, big }: { status: CheckStatus; big?: boolean }) {
   return <View style={[s.dot, big && s.dotBig, status === "fixed" ? s.dotFixed : status === "checked" ? s.dotChecked : s.dotPro]} />;
 }
 
-function History() {
-  const [gadget, setGadget] = useState<Gadget | undefined>(GADGETS[0]);
+function History({ gadgets, history }: { gadgets: Gadget[]; history: Check[] }) {
+  const [gadget, setGadget] = useState<Gadget | undefined>(gadgets[0]);
   const [picking, setPicking] = useState(false);
-  const checks = HISTORY.filter((c) => c.gadget === gadget?.id).sort((a, b) => a.date.localeCompare(b.date));
+  const checks = history.filter((c) => c.gadget === gadget?.id).sort((a, b) => a.date.localeCompare(b.date));
   // Opens on the month of the gadget's latest check (or this month when it has none).
   const opening = () => {
     const last = checks[checks.length - 1]?.date;
@@ -1310,7 +1667,7 @@ function History() {
     setGadget(g);
     setPicking(false);
     setDay(null);
-    const last = HISTORY.filter((c) => c.gadget === g.id).map((c) => c.date).sort().pop();
+    const last = history.filter((c) => c.gadget === g.id).map((c) => c.date).sort().pop();
     const d = last ? new Date(`${last}T00:00:00`) : new Date();
     setView({ y: d.getFullYear(), m: d.getMonth() });
   };
@@ -1415,7 +1772,7 @@ function History() {
         ))}
         {!shown.length && (
           <Text style={[s.msgText, s.dim, s.gEmpty]}>
-            {!HISTORY.length ? "No checks yet." : `No checks ${day !== null ? "on this day" : "this month"}.`}
+            {!history.length ? "No checks yet." : `No checks ${day !== null ? "on this day" : "this month"}.`}
           </Text>
         )}
       </ScrollView>
@@ -1423,9 +1780,9 @@ function History() {
       {/* Over the page, under the gadget button; a child of this full-page view so Android delivers its taps. */}
       {picking && (
         <Pop from="right" style={s.hMenu}>
-          {GADGETS.map((g) => (
+          {gadgets.map((g) => (
             <Pressable key={g.id} onPress={() => pick(g)} style={s.attachItem} accessibilityRole="button">
-              <Feather name={g.type === "laptop" ? "monitor" : "smartphone"} size={17} color="#000" />
+              <Feather name={kindIcon(g.kind)} size={17} color="#000" />
               <Text style={s.attachText}>{g.name}</Text>
             </Pressable>
           ))}
@@ -1433,6 +1790,157 @@ function History() {
       )}
 
     </View>
+  );
+}
+
+// New-account questions: one per screen, with the repair guide's progress bar. Every answer is optional
+// (Skip) and can be changed later in Profile. Skill and gadgets are passed to the AI with each diagnosis.
+const SETUP_KEY = "setup";
+const DEVICE_KINDS: { label: string; icon: FeatherName }[] = [
+  { label: "Phone", icon: "smartphone" },
+  { label: "Laptop", icon: "monitor" },
+  { label: "Tablet", icon: "tablet" },
+  { label: "Desktop PC", icon: "cpu" },
+  { label: "Smartwatch", icon: "watch" },
+  { label: "Headphones", icon: "headphones" },
+  { label: "TV", icon: "tv" },
+  { label: "Speaker", icon: "speaker" },
+];
+const SKILLS = [
+  { label: "New to this", detail: "Keep it simple and careful, please." },
+  { label: "I've fixed a few things", detail: "I can handle a screwdriver." },
+  { label: "I'm comfortable with tools", detail: "Give me the technical details." },
+];
+type SetupAnswers = Pick<Settings, "name" | "devices" | "skill" | "region" | "language">;
+const SETUP_STEPS: { title: string; sub: string }[] = [
+  { title: "What should we call you?", sub: "We'll greet you by your first name." },
+  { title: "Which gadgets do you use?", sub: "Pick all that apply. It helps FixByte AI recognise your devices." },
+  { title: "How handy are you with repairs?", sub: "Your repair guides will match your experience." },
+  { title: "Where are you based?", sub: "Used to find repair shops when your location is off." },
+  { title: "Which language should FixByte AI reply in?", sub: "The app's buttons stay in English." },
+];
+
+function Setup({ settings, onFinish }: { settings: Settings; onFinish: (answers: Partial<SetupAnswers>) => void }) {
+  const [step, setStep] = useState(0);
+  const [a, setA] = useState<SetupAnswers>({
+    name: settings.name,
+    devices: settings.devices,
+    skill: settings.skill,
+    region: settings.region,
+    language: settings.language,
+  });
+  const last = step === SETUP_STEPS.length - 1;
+  const next = () => (last ? onFinish({ ...a, name: a.name.trim() }) : setStep(step + 1));
+  const set = (patch: Partial<SetupAnswers>) => setA((cur) => ({ ...cur, ...patch }));
+  const { title, sub } = SETUP_STEPS[step];
+
+  return (
+    <KeyboardAvoidingView style={s.flex} behavior="padding">
+      <View style={s.header}>
+        {step > 0 ? (
+          <Pressable onPress={() => setStep(step - 1)} style={s.circle} accessibilityLabel="Previous question">
+            <Feather name="arrow-left" size={20} color="#000" />
+          </Pressable>
+        ) : (
+          <View style={s.headerSpacer} />
+        )}
+        <Text style={s.title}>Get set up</Text>
+        <Pressable onPress={next} style={s.stepCount} accessibilityRole="button" accessibilityLabel={last ? "Skip and finish" : "Skip this question"}>
+          <Text style={s.stepCountText}>Skip</Text>
+        </Pressable>
+      </View>
+      <View style={s.segments}>
+        {SETUP_STEPS.map((_, i) => (
+          <Segment key={i} state={i < step ? "done" : i === step ? "now" : "next"} />
+        ))}
+      </View>
+
+      {/* Keyed by step so each question starts scrolled to the top. */}
+      <ScrollView key={step} style={s.flex} contentContainerStyle={s.setup} keyboardShouldPersistTaps="handled">
+        <Text style={s.monoLabel}>
+          QUESTION {step + 1} OF {SETUP_STEPS.length}
+        </Text>
+        <Text style={s.setupTitle}>{title}</Text>
+        <Text style={s.setupSub}>{sub}</Text>
+
+        {step === 0 && (
+          <TextInput
+            value={a.name}
+            onChangeText={(name) => set({ name })}
+            placeholder="Your name"
+            placeholderTextColor="rgba(0,0,0,0.2)"
+            autoComplete="name"
+            textContentType="name"
+            autoFocus
+            returnKeyType="next"
+            onSubmitEditing={next}
+            accessibilityLabel="Your name"
+            style={[s.authInput, s.setupInput]}
+          />
+        )}
+
+        {step === 1 && (
+          <View style={s.setupGrid}>
+            {DEVICE_KINDS.map((d) => {
+              const on = a.devices.includes(d.label);
+              return (
+                <Pressable
+                  key={d.label}
+                  onPress={() => set({ devices: on ? a.devices.filter((x) => x !== d.label) : [...a.devices, d.label] })}
+                  style={[s.setupTile, on && s.setupOn]}
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: on }}
+                >
+                  <Feather name={d.icon} size={24} color={on ? "#fff" : "#000"} />
+                  <Text style={[s.setupTileText, on && s.tagTextLight]}>{d.label}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        )}
+
+        {step === 2 &&
+          SKILLS.map((k) => {
+            const on = a.skill === k.label;
+            return (
+              <Pressable
+                key={k.label}
+                onPress={() => set({ skill: k.label })}
+                style={[s.setupOption, on && s.setupOn]}
+                accessibilityRole="radio"
+                accessibilityState={{ checked: on }}
+              >
+                <View style={s.flex}>
+                  <Text style={[s.setupOptionTitle, on && s.tagTextLight]}>{k.label}</Text>
+                  <Text style={[s.setupOptionDetail, on && s.setupOptionDetailOn]}>{k.detail}</Text>
+                </View>
+                {on && <Feather name="check" size={20} color={GREEN} />}
+              </Pressable>
+            );
+          })}
+
+        {(step === 3 || step === 4) && (
+          <View style={s.pSettings}>
+            {(step === 3 ? REGIONS : LANGUAGES).map((o) => {
+              const key = step === 3 ? "region" : "language";
+              const on = a[key] === o;
+              return (
+                <Pressable key={o} onPress={() => set({ [key]: o })} style={s.pRow} accessibilityRole="radio" accessibilityState={{ checked: on }}>
+                  <Text style={s.pRowLabel}>{o}</Text>
+                  {on && <Feather name="check" size={20} color="#000" />}
+                </Pressable>
+              );
+            })}
+          </View>
+        )}
+      </ScrollView>
+
+      <View style={s.footer}>
+        <Pressable onPress={next} style={s.welcomeBtn} accessibilityRole="button">
+          <Text style={s.welcomeBtnText}>{last ? "Finish" : "Continue"}</Text>
+        </Pressable>
+      </View>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -1445,7 +1953,7 @@ const AUTH_TEXT = {
   register: { title: "Create account", sub: "Register a new account to continue", button: "Sign up" },
 };
 
-function Auth({ initial, onBack, onDone }: { initial: AuthMode; onBack: () => void; onDone: () => void }) {
+function Auth({ initial, onBack, onDone }: { initial: AuthMode; onBack: () => void; onDone: (created: boolean) => void }) {
   const [mode, setMode] = useState(initial);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -1468,7 +1976,7 @@ function Auth({ initial, onBack, onDone }: { initial: AuthMode; onBack: () => vo
   // Success needs nothing more here: the App's Firebase listener sees the new sign-in and opens Home.
   async function submit() {
     setMessage(null);
-    if (!firebaseReady) return onDone();
+    if (!firebaseReady) return onDone(register);
     if (register && password !== confirm) return fail("The passwords don't match.");
     setBusy(true);
     try {
@@ -1494,7 +2002,7 @@ function Auth({ initial, onBack, onDone }: { initial: AuthMode; onBack: () => vo
 
   async function google() {
     setMessage(null);
-    if (!firebaseReady) return onDone();
+    if (!firebaseReady) return onDone(false);
     // ponytail: phones need a native Google module (and a development build, not Expo Go); web uses Firebase's popup.
     if (Platform.OS !== "web") return setMessage({ text: "Google sign-in isn't available in the phone app yet. Use your email.", error: false });
     try {
@@ -1509,7 +2017,7 @@ function Auth({ initial, onBack, onDone }: { initial: AuthMode; onBack: () => vo
   const pillX = slide.interpolate({ inputRange: [0, 1], outputRange: [0, pillW] });
 
   return (
-    <KeyboardAvoidingView style={s.flex} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+    <KeyboardAvoidingView style={s.flex} behavior="padding">
       <View style={s.header}>
         <Pressable onPress={onBack} style={s.circle} accessibilityLabel="Back">
           <Feather name="arrow-left" size={20} color="#000" />
@@ -2104,7 +2612,73 @@ function Bookmark({ saved, big, onPress }: { saved: boolean; big?: boolean; onPr
   );
 }
 
-function Result({ t, onBack }: { t: Extract<Turn, { role: "assistant" }>; onBack: () => void }) {
+// After a diagnosis that matched none of your gadgets: save it to one, add the device as a new gadget, or skip.
+function FileCheck({
+  device,
+  gadgets,
+  onPick,
+  onAdd,
+  onSkip,
+}: {
+  device?: string;
+  gadgets: Gadget[];
+  onPick: (g: Gadget) => void;
+  onAdd: () => void;
+  onSkip: () => void;
+}) {
+  return (
+    <Pop from="left" style={s.fileCard}>
+      <Text style={s.fileTitle}>Save to My gadgets?</Text>
+      <Text style={s.fileSub}>
+        {gadgets.length ? "Which gadget is this? It goes in that gadget's history." : "Keep this check in your gadget's history."}
+      </Text>
+      {gadgets.map((g) => (
+        <Pressable key={g.id} onPress={() => onPick(g)} style={s.fileRow} accessibilityRole="button">
+          <View style={s.fileIcon}>
+            <Feather name={kindIcon(g.kind)} size={18} color="#000" />
+          </View>
+          <Text style={s.fileRowText} numberOfLines={1}>
+            {g.name}
+          </Text>
+          <Feather name="chevron-right" size={18} color="rgba(0,0,0,0.4)" />
+        </Pressable>
+      ))}
+      <Pressable onPress={onAdd} style={s.fileRow} accessibilityRole="button">
+        <View style={[s.fileIcon, s.fileIconAdd]}>
+          <Feather name="plus" size={18} color={GREEN} />
+        </View>
+        <Text style={s.fileRowText} numberOfLines={1}>
+          Add {device ? `“${device}”` : "this device"} as a gadget
+        </Text>
+      </Pressable>
+      <Pressable onPress={onSkip} style={s.fileSkip} hitSlop={8} accessibilityRole="button">
+        <Text style={s.fileSkipText}>Not now</Text>
+      </Pressable>
+    </Pop>
+  );
+}
+
+// After finishing a repair guide: did it work? Yes marks the check Fixed.
+function AskFixed({ gadget, onAnswer }: { gadget?: string; onAnswer: (fixed: boolean) => void }) {
+  return (
+    <Pop from="left" style={s.fileCard}>
+      <Text style={s.fileTitle}>Did the repair work?</Text>
+      <Text style={s.fileSub}>{gadget ? `We'll mark your ${gadget} as fixed.` : "We'll mark this check as fixed."}</Text>
+      <View style={s.gAddActions}>
+        <Pressable onPress={() => onAnswer(false)} style={[s.googleBtn, s.fileBtn]} accessibilityRole="button">
+          <Text style={s.googleText}>Not yet</Text>
+        </Pressable>
+        <Pressable onPress={() => onAnswer(true)} style={[s.welcomeBtn, s.fileBtn]} accessibilityRole="button">
+          <Feather name="check" size={18} color={GREEN} />
+          <Text style={s.welcomeBtnText}>Yes, it's fixed</Text>
+        </Pressable>
+      </View>
+    </Pop>
+  );
+}
+
+// `top` is a card shown above the verdict: "Save to My gadgets?" or "Did the repair work?".
+function Result({ t, onBack, top }: { t: Extract<Turn, { role: "assistant" }>; onBack: () => void; top?: ReactNode }) {
   const d = t.diagnosis!;
   const cat = TAGS.category[d.category] ?? TAGS.category.Hardware;
   const diff = TAGS.difficulty[d.difficulty] ?? TAGS.difficulty["Some skill"];
@@ -2137,6 +2711,7 @@ function Result({ t, onBack }: { t: Extract<Turn, { role: "assistant" }>; onBack
       </View>
 
       <ScrollView style={s.flex} contentContainerStyle={s.result}>
+        {top}
         <View style={s.symptom}>
           <View style={s.symptomDot} />
           <Text style={s.symptomText}>{d.summary}</Text>
@@ -2213,7 +2788,7 @@ function minutesLabel(m: number) {
   return `About ${h} hr${h === 1 ? "" : "s"}`;
 }
 
-function Guide({ d, step, onStep, onClose }: { d: Diagnosis; step: number; onStep: (i: number) => void; onClose: () => void }) {
+function Guide({ d, step, onStep, onClose }: { d: Diagnosis; step: number; onStep: (i: number) => void; onClose: (finished: boolean) => void }) {
   const st = d.steps[step];
   const last = step === d.steps.length - 1;
   const cat = TAGS.category[d.category] ?? TAGS.category.Hardware;
@@ -2222,7 +2797,7 @@ function Guide({ d, step, onStep, onClose }: { d: Diagnosis; step: number; onSte
   return (
     <View style={s.flex}>
       <View style={s.header}>
-        <Pressable onPress={onClose} style={s.circle} accessibilityLabel="Back to diagnosis">
+        <Pressable onPress={() => onClose(false)} style={s.circle} accessibilityLabel="Back to diagnosis">
           <Feather name="arrow-left" size={20} color="#000" />
         </Pressable>
         <Text style={s.title}>Repair Guide</Text>
@@ -2285,10 +2860,10 @@ function Guide({ d, step, onStep, onClose }: { d: Diagnosis; step: number; onSte
       </ScrollView>
 
       <View style={[s.footer, s.actions]}>
-        <Pressable onPress={() => (step === 0 ? onClose() : onStep(step - 1))} style={s.backBtn} accessibilityRole="button">
+        <Pressable onPress={() => (step === 0 ? onClose(false) : onStep(step - 1))} style={s.backBtn} accessibilityRole="button">
           <Text style={s.backText}>Back</Text>
         </Pressable>
-        <Pressable onPress={() => (last ? onClose() : onStep(step + 1))} style={s.nextBtn} accessibilityRole="button">
+        <Pressable onPress={() => (last ? onClose(true) : onStep(step + 1))} style={s.nextBtn} accessibilityRole="button">
           <Text style={s.nextText}>{last ? "Finish" : "Next step"}</Text>
           <View style={s.nextIcon}>
             <Feather name={last ? "check" : "arrow-right"} size={16} color="#000" />
@@ -2567,25 +3142,65 @@ const s = StyleSheet.create({
   // My gadgets and the tab bar, measured from the mockup.
   gHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 20, paddingTop: 15 },
   gTitle: { fontFamily: "Poppins_600SemiBold", fontSize: 26, lineHeight: 34, color: "#000" },
-  gCount: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 19, color: "rgba(0,0,0,0.5)" },
+  gCount: { fontFamily: "Poppins_400Regular", fontSize: 14, lineHeight: 20, color: "rgba(0,0,0,0.5)" },
   gAdd: { backgroundColor: "#000" },
-  gList: { paddingHorizontal: 20, paddingTop: 15, paddingBottom: 20 },
-  gSearch: { flexDirection: "row", alignItems: "center", height: 58, paddingHorizontal: 20, borderRadius: 100, backgroundColor: "#fff", borderWidth: 1, borderColor: "rgba(0,0,0,0.05)" },
-  gSearchInput: { flex: 1, height: "100%", marginLeft: 15, fontFamily: "Poppins_400Regular", fontSize: 16, color: "#000" },
-  gFilters: { flexDirection: "row", gap: 10, marginTop: 10 },
-  gChip: { height: 44, paddingHorizontal: 22, borderRadius: 100, backgroundColor: "#fff", justifyContent: "center" },
-  gChipText: { fontFamily: "Poppins_400Regular", fontSize: 15, color: "#000" },
-  gCard: { flexDirection: "row", alignItems: "center", marginTop: 12, padding: 20, borderRadius: 25, backgroundColor: "#fff" },
-  gIcon: { width: 60, height: 60, borderRadius: 16, backgroundColor: "#000", alignItems: "center", justifyContent: "center" },
+  gEmpty: { textAlign: "center", marginTop: 20 }, // History's empty message
+  gEmptyCard: { alignItems: "center", paddingTop: 36, paddingBottom: 28, paddingHorizontal: 24, borderRadius: 28, backgroundColor: "#fff" },
+  gHero: { flexDirection: "row", alignItems: "center", marginBottom: 22 },
+  gHeroIcon: { alignItems: "center", justifyContent: "center", borderRadius: 100 },
+  gHeroMain: { width: 76, height: 76, backgroundColor: "#000", marginHorizontal: -8, zIndex: 1, borderWidth: 5, borderColor: "#fff" },
+  gHeroSide: { width: 56, height: 56, backgroundColor: "#F3F3F3" },
+  gEmptyTitle: { fontFamily: "Poppins_600SemiBold", fontSize: 20, lineHeight: 28, color: "#000" },
+  gEmptyBody: { fontFamily: "Poppins_400Regular", fontSize: 15, lineHeight: 22, textAlign: "center", color: "rgba(0,0,0,0.55)", marginTop: 6, maxWidth: 290 },
+  gEmptyBtn: { flexDirection: "row", gap: 8, alignSelf: "stretch", marginTop: 24 },
+  gSearch: { flexDirection: "row", alignItems: "center", gap: 12, height: 52, paddingHorizontal: 18, borderRadius: 100, backgroundColor: "#fff" },
+  gSearchInput: { flex: 1, height: "100%", fontFamily: "Poppins_400Regular", fontSize: 15, color: "#000" },
+  gFilters: { marginTop: 12, marginHorizontal: -20 },
+  gFilterRow: { gap: 8, paddingHorizontal: 20 },
+  gChip: { flexDirection: "row", alignItems: "center", gap: 8, height: 40, paddingLeft: 16, paddingRight: 8, borderRadius: 100, backgroundColor: "#fff" },
+  gChipText: { fontFamily: "Poppins_500Medium", fontSize: 14, color: "#000" },
+  gChipCount: { minWidth: 24, height: 24, paddingHorizontal: 6, borderRadius: 12, backgroundColor: "#F3F3F3", alignItems: "center", justifyContent: "center" },
+  gChipCountOn: { backgroundColor: "rgba(255,255,255,0.18)" },
+  gChipCountText: { fontFamily: "Poppins_500Medium", fontSize: 12, color: "rgba(0,0,0,0.55)" },
+  gChipCountTextOn: { color: "#fff" },
+  gCard: { marginTop: 12, padding: 18, borderRadius: 24, backgroundColor: "#fff" },
+  gTop: { flexDirection: "row", alignItems: "center" },
+  gIcon: { width: 52, height: 52, borderRadius: 16, backgroundColor: "#F3F3F3", alignItems: "center", justifyContent: "center" },
   gText: { flex: 1, marginLeft: 14 },
-  gName: { fontFamily: "Poppins_500Medium", fontSize: 16, lineHeight: 23, color: "#000" },
-  gIssue: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 19, color: "rgba(0,0,0,0.6)" },
-  gMeta: { fontFamily: "Poppins_400Regular", fontSize: 12, lineHeight: 18, color: "rgba(0,0,0,0.4)" },
-  gStatus: { alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 5, height: 26, paddingHorizontal: 12, borderRadius: 100, backgroundColor: GREEN },
+  gName: { fontFamily: "Poppins_600SemiBold", fontSize: 16, lineHeight: 23, color: "#000" },
+  gKind: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 19, color: "rgba(0,0,0,0.5)" },
+  gStatus: { flexDirection: "row", alignItems: "center", gap: 5, height: 28, paddingHorizontal: 12, borderRadius: 100 },
   gStatusText: { fontFamily: "Poppins_500Medium", fontSize: 13, color: "#000" },
-  gEmpty: { textAlign: "center", marginTop: 20 },
-  gRegister: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 12, height: 74, marginTop: 10, borderRadius: 25, borderWidth: 1, borderStyle: "dashed", borderColor: "rgba(0,0,0,0.2)" },
-  gRegisterText: { fontFamily: "Poppins_500Medium", fontSize: 15, color: "#000" },
+  gDivider: { height: 1, backgroundColor: "rgba(0,0,0,0.06)", marginVertical: 14 },
+  gFoot: { flexDirection: "row", alignItems: "center", gap: 12 },
+  gIssue: { flex: 1, fontFamily: "Poppins_400Regular", fontSize: 14, lineHeight: 20, color: "rgba(0,0,0,0.6)" },
+  gMeta: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 19, color: "rgba(0,0,0,0.4)" },
+  gRemove: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, height: 48, marginTop: 14, borderRadius: 100, backgroundColor: "#FDECEC" },
+  gRemoveText: { fontFamily: "Poppins_500Medium", fontSize: 14, color: "#dc2626" },
+  gCheckBtn: { flexDirection: "row", gap: 8, height: 52, marginTop: 14 },
+  forTag: { flexDirection: "row", alignItems: "center", gap: 8, alignSelf: "center", maxWidth: "100%", height: 34, paddingHorizontal: 14, marginBottom: 10, borderRadius: 100, backgroundColor: "#fff" },
+  forTagText: { flexShrink: 1, fontFamily: "Poppins_500Medium", fontSize: 13, color: "#000" },
+  fileCard: { padding: 18, marginBottom: 14, borderRadius: 24, backgroundColor: "#fff", borderWidth: 1, borderColor: "rgba(0,0,0,0.06)" },
+  fileTitle: { fontFamily: "Poppins_600SemiBold", fontSize: 17, lineHeight: 24, color: "#000" },
+  fileSub: { fontFamily: "Poppins_400Regular", fontSize: 14, lineHeight: 20, color: "rgba(0,0,0,0.55)", marginTop: 2, marginBottom: 8 },
+  fileRow: { flexDirection: "row", alignItems: "center", gap: 12, height: 52 },
+  fileIcon: { width: 36, height: 36, borderRadius: 12, backgroundColor: "#F3F3F3", alignItems: "center", justifyContent: "center" },
+  fileIconAdd: { backgroundColor: "#000" },
+  fileRowText: { flex: 1, fontFamily: "Poppins_500Medium", fontSize: 15, color: "#000" },
+  fileSkip: { alignSelf: "center", marginTop: 6 },
+  fileSkipText: { fontFamily: "Poppins_500Medium", fontSize: 14, color: "rgba(0,0,0,0.5)" },
+  fileBtn: { flex: 1, flexDirection: "row", gap: 8, height: 50 },
+  gNoMatch: { textAlign: "center", marginTop: 24 },
+  gAddCard: { padding: 20, marginBottom: 12, borderRadius: 28, backgroundColor: "#fff" },
+  gAddTitle: { fontFamily: "Poppins_600SemiBold", fontSize: 18, lineHeight: 26, color: "#000", marginBottom: 14 },
+  gAddInput: { backgroundColor: "#F3F3F3", borderColor: "transparent" },
+  gAddLabel: { fontFamily: "Poppins_500Medium", fontSize: 14, color: "rgba(0,0,0,0.55)", marginTop: 18, marginBottom: 10 },
+  gKinds: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  gKindTile: { width: "23%", flexGrow: 1, height: 72, borderRadius: 18, backgroundColor: "#F3F3F3", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 4 },
+  gKindText: { fontFamily: "Poppins_500Medium", fontSize: 11, color: "#000" },
+  gAddActions: { flexDirection: "row", gap: 10, marginTop: 18 },
+  gAddBtn: { flex: 1, height: 52 },
+  gList: { paddingHorizontal: 20, paddingTop: 15, paddingBottom: 20 },
   tabBar: { flexDirection: "row", gap: 10, paddingHorizontal: 20, paddingBottom: 20, paddingTop: 8 },
   tabHome: { width: 59, height: 59, borderRadius: 100, backgroundColor: "#fff", alignItems: "center", justifyContent: "center" },
   tabPill: { flex: 1, flexDirection: "row", height: 59, padding: 7, borderRadius: 100, backgroundColor: "#000" },
@@ -2650,6 +3265,19 @@ const s = StyleSheet.create({
   hDate: { width: 40, alignItems: "center", marginRight: 2 },
   hDateMonth: { fontFamily: "Poppins_500Medium", fontSize: 11, lineHeight: 14, color: "rgba(0,0,0,0.5)" },
   hDateDay: { fontFamily: "Poppins_600SemiBold", fontSize: 22, lineHeight: 28, color: "#000" },
+  // New-account questions.
+  setup: { paddingHorizontal: 20, paddingTop: 26, paddingBottom: 20 },
+  setupTitle: { fontFamily: "Poppins_600SemiBold", fontSize: 26, lineHeight: 34, color: "#000", marginTop: 8 },
+  setupSub: { fontFamily: "Poppins_400Regular", fontSize: 15, lineHeight: 22, color: "rgba(0,0,0,0.55)", marginTop: 6, marginBottom: 22 },
+  setupInput: { fontSize: 17 },
+  setupGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
+  setupTile: { width: "48%", flexGrow: 1, height: 96, borderRadius: 22, backgroundColor: "#fff", alignItems: "center", justifyContent: "center", gap: 8 },
+  setupTileText: { fontFamily: "Poppins_500Medium", fontSize: 15, color: "#000" },
+  setupOn: { backgroundColor: "#000" },
+  setupOption: { flexDirection: "row", alignItems: "center", gap: 12, padding: 20, marginBottom: 10, borderRadius: 22, backgroundColor: "#fff" },
+  setupOptionTitle: { fontFamily: "Poppins_500Medium", fontSize: 16, lineHeight: 23, color: "#000" },
+  setupOptionDetail: { fontFamily: "Poppins_400Regular", fontSize: 14, lineHeight: 20, color: "rgba(0,0,0,0.55)" },
+  setupOptionDetailOn: { color: "rgba(255,255,255,0.7)" },
   // Sign in / Create account, measured from the mockups.
   auth: { paddingHorizontal: 20, paddingTop: 20, paddingBottom: 30 },
   authTitle: { fontFamily: "Poppins_500Medium", fontSize: 32, lineHeight: 42, textAlign: "center", color: "#000" },
