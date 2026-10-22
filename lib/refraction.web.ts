@@ -12,8 +12,8 @@ function map(axis: "x" | "y") {
   // y: green ramps top to bottom; blue stays 128.
   const [x2, y2] = axis === "x" ? [1, 0] : [0, 1];
   const c = (v: number) => (axis === "x" ? `rgb(${v},128,128)` : `rgb(128,${v},128)`);
-  // Only a thin rim bends (about 14pt on a phone-width bar, 12pt top and bottom); the rest stays clear.
-  const band = axis === "x" ? 0.05 : 0.18;
+  // Only the very rim bends: about 7pt at the ends of a phone-width bar, 7pt along the top and bottom.
+  const band = axis === "x" ? 0.025 : 0.11;
   const svg =
     `<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100' preserveAspectRatio='none'>` +
     `<linearGradient id='g' x1='0' y1='0' x2='${x2}' y2='${y2}'>` +
@@ -45,5 +45,6 @@ const supported =
 export function lensStyle(): object {
   if (!supported) return { backdropFilter: "blur(12px) saturate(160%)", WebkitBackdropFilter: "blur(12px) saturate(160%)" };
   inject();
-  return { backdropFilter: `url(#${ID}) blur(3px) saturate(170%)` };
+  // A very light blur, so the inside of the glass stays clear and only the rim visibly bends.
+  return { backdropFilter: `url(#${ID}) blur(1px) saturate(160%)` };
 }
