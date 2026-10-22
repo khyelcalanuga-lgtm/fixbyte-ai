@@ -478,7 +478,7 @@ export default function App() {
             }}
           />
         ) : tab === "history" ? (
-          <History gadgets={gadgets} history={history} />
+          <History gadgets={gadgets} history={history} onChange={saveHistory} onDiagnose={() => setTab("home")} />
         ) : tab === "profile" ? (
           <Profile
             gadgetCount={gadgets.length}
@@ -802,13 +802,17 @@ for (let x = -GLOW_R; x <= GLOW_R; x += GLOW_GAP)
     if (d < GLOW_R) GLOW_DOTS.push({ x: x + GLOW_R, y: y + GLOW_R, o: 0.1 * (1 - d / GLOW_R) ** 1.5 });
   }
 
+// The circle is wider than the screen, so it sits in a screen-sized clipped layer: nothing extends past the edges
+// (unclipped, a browser scrolled the whole page sideways to reach the focused message box).
 function DotGlow() {
   return (
-    <Svg width={GLOW_R * 2} height={GLOW_R * 2} style={s.glow} pointerEvents="none">
-      {GLOW_DOTS.map((p, i) => (
-        <Circle key={i} cx={p.x} cy={p.y} r={1.5} fill="#000" opacity={p.o} />
-      ))}
-    </Svg>
+    <View style={s.glowClip} pointerEvents="none">
+      <Svg width={GLOW_R * 2} height={GLOW_R * 2} style={s.glow}>
+        {GLOW_DOTS.map((p, i) => (
+          <Circle key={i} cx={p.x} cy={p.y} r={1.5} fill="#000" opacity={p.o} />
+        ))}
+      </Svg>
+    </View>
   );
 }
 
@@ -1675,36 +1679,65 @@ type Check = { id: string; gadget: string; date: string; title: string; detail: 
 const HISTORY_KEY = "history";
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const WEEKDAYS = ["S", "M", "T", "W", "TH", "F", "S"];
-const LEGEND: { status: CheckStatus; label: string }[] = [
-  { status: "fixed", label: "Fixed" },
-  { status: "checked", label: "Checked" },
-  { status: "pro", label: "Needs a pro" },
-];
 const ymd = (y: number, m: number, d: number) => `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
 
 function StatusDot({ status, big }: { status: CheckStatus; big?: boolean }) {
   return <View style={[s.dot, big && s.dotBig, status === "fixed" ? s.dotFixed : status === "checked" ? s.dotChecked : s.dotPro]} />;
 }
 
-function History({ gadgets, history }: { gadgets: Gadget[]; history: Check[] }) {
-  const [gadget, setGadget] = useState<Gadget | undefined>(gadgets[0]);
-  const [picking, setPicking] = useState(false);
-  const checks = history.filter((c) => c.gadget === gadget?.id).sort((a, b) => a.date.localeCompare(b.date));
-  // Opens on the month of the gadget's latest check (or this month when it has none).
-  const opening = () => {
-    const last = checks[checks.length - 1]?.date;
-    const d = last ? new Date(`${last}T00:00:00`) : new Date();
-    return { y: d.getFullYear(), m: d.getMonth() };
+// History, all gadgets at once by default: a month card (summary tiles + calendar to pick a day) above a timeline
+// of checks grouped by day, newest first. Tapping a check offers Mark as fixed and Remove.
+const STATUS_BADGE: Record<CheckStatus, { label: string; icon: FeatherName; bg: string; fg: string }> = {
+  fixed: { label: "Fixed", icon: "check", bg: GREEN, fg: "#000" },
+  checked: { label: "Checked", icon: "search", bg: "#F3F3F3", fg: "#000" },
+  pro: { label: "Needs a pro", icon: "alert-triangle", bg: "#000", fg: GREEN },
+};
+const parseDay = (d: string) => new Date(`${d}T00:00:00`);
+
+function History({
+  gadgets,
+  history,
+  onChange,
+  onDiagnose,
+}: {
+  gadgets: Gadget[];
+  history: Check[];
+  onChange: (list: Check[]) => void;
+  onDiagnose: () => void;
+}) {
+  const [only, setOnly] = useState<string | null>(null); // gadget filter; null = all gadgets
+  const checks = history.filter((c) => !only || c.gadget === only).sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id));
+  const monthOf = (d?: string) => {
+    const x = d ? parseDay(d) : new Date();
+    return { y: x.getFullYear(), m: x.getMonth() };
   };
-  const [view, setView] = useState(opening);
+  const [view, setView] = useState(() => monthOf(checks[0]?.date)); // opens on the latest check's month
   const [day, setDay] = useState<number | null>(null); // selected day; null shows the whole month
+  const [open, setOpen] = useState<string | null>(null); // check showing its actions
+  const [confirm, setConfirm] = useState(false);
 
   const now = new Date();
   const today = ymd(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterday = ymd(now.getFullYear(), now.getMonth(), now.getDate() - 1);
   const prefix = ymd(view.y, view.m, 1).slice(0, 8); // "YYYY-MM-"
   const monthChecks = checks.filter((c) => c.date.startsWith(prefix));
-  const byDay = new Map(monthChecks.map((c) => [Number(c.date.slice(8)), c.status])); // later checks win
+  // Each day's marker: the most urgent status that day (needs a pro > checked > fixed).
+  const rank = { pro: 3, checked: 2, fixed: 1 };
+  const byDay = new Map<number, CheckStatus>();
+  for (const c of monthChecks) {
+    const d = Number(c.date.slice(8));
+    const cur = byDay.get(d);
+    if (!cur || rank[c.status] > rank[cur]) byDay.set(d, c.status);
+  }
   const shown = day === null ? monthChecks : monthChecks.filter((c) => Number(c.date.slice(8)) === day);
+  const groups: { date: string; items: Check[] }[] = [];
+  for (const c of shown) {
+    if (groups.at(-1)?.date === c.date) groups.at(-1)!.items.push(c);
+    else groups.push({ date: c.date, items: [c] });
+  }
+  const count = (st: CheckStatus) => monthChecks.filter((c) => c.status === st).length;
+  const fixedAll = history.filter((c) => c.status === "fixed").length;
+  const filterGadgets = gadgets.filter((g) => history.some((c) => c.gadget === g.id));
 
   // Weeks of 7 cells, blank before the 1st and after the last day.
   const cells: (number | null)[] = [
@@ -1714,137 +1747,240 @@ function History({ gadgets, history }: { gadgets: Gadget[]; history: Check[] }) 
   while (cells.length % 7) cells.push(null);
   const weeks = Array.from({ length: cells.length / 7 }, (_, w) => cells.slice(w * 7, w * 7 + 7));
 
+  const goTo = (v: { y: number; m: number }) => {
+    setView(v);
+    setDay(null);
+    setOpen(null);
+  };
   const move = (delta: number) => {
     const d = new Date(view.y, view.m + delta, 1);
-    setView({ y: d.getFullYear(), m: d.getMonth() });
-    setDay(null);
+    goTo({ y: d.getFullYear(), m: d.getMonth() });
   };
-  const pick = (g: Gadget) => {
-    setGadget(g);
-    setPicking(false);
-    setDay(null);
-    const last = history.filter((c) => c.gadget === g.id).map((c) => c.date).sort().pop();
-    const d = last ? new Date(`${last}T00:00:00`) : new Date();
-    setView({ y: d.getFullYear(), m: d.getMonth() });
+  const filter = (id: string | null) => {
+    setOnly(id);
+    const latest = history.filter((c) => !id || c.gadget === id).sort((a, b) => b.date.localeCompare(a.date))[0];
+    goTo(monthOf(latest?.date));
   };
-  const thisMonth = view.y === now.getFullYear() && view.m === now.getMonth();
-  const label = day !== null ? `${MONTHS[view.m].slice(0, 3)} ${day}` : thisMonth ? "This month" : `${MONTHS[view.m]} ${view.y}`;
+  const dayLabel = (d: string) =>
+    d === today
+      ? "Today"
+      : d === yesterday
+        ? "Yesterday"
+        : parseDay(d).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+  const toggle = (id: string) => {
+    setOpen(open === id ? null : id);
+    setConfirm(false);
+  };
 
   return (
     <View style={s.flex}>
       <View style={s.gHeader}>
-        <View>
+        <View style={s.flex}>
           <Text style={s.gTitle}>History</Text>
-          <Text style={s.gCount}>Every check and fix, by date</Text>
+          <Text style={s.gCount}>
+            {history.length
+              ? `${history.length} check${history.length === 1 ? "" : "s"} · ${fixedAll} fixed`
+              : "Every check and fix, by date"}
+          </Text>
         </View>
-        {gadget && (
-          <Pressable onPress={() => setPicking((o) => !o)} style={s.hPicker} accessibilityLabel={`Gadget: ${gadget.name}`} accessibilityState={{ expanded: picking }}>
-            <Text style={s.hPickerText}>{gadget.name}</Text>
-            <Feather name={picking ? "chevron-up" : "chevron-down"} size={20} color="#000" />
-          </Pressable>
-        )}
       </View>
 
       <ScrollView style={s.flex} contentContainerStyle={s.gList}>
-        <View style={s.hCal}>
-          <View style={s.hMonthRow}>
-            <Text style={s.hMonth}>
-              {MONTHS[view.m]} {view.y}
-            </Text>
-            <Pressable onPress={() => move(-1)} hitSlop={10} accessibilityLabel="Previous month">
-              <Feather name="chevron-left" size={24} color="#000" />
-            </Pressable>
-            <Pressable onPress={() => move(1)} hitSlop={10} style={s.hNext} accessibilityLabel="Next month">
-              <Feather name="chevron-right" size={24} color="#000" />
-            </Pressable>
-          </View>
-
-          <View style={s.hWeek}>
-            {WEEKDAYS.map((w, i) => (
-              <Text key={i} style={[s.hCell, s.hWeekday]}>
-                {w}
-              </Text>
-            ))}
-          </View>
-          {weeks.map((week, wi) => (
-            <View key={wi} style={s.hWeek}>
-              {week.map((d, i) => {
-                if (d === null) return <View key={i} style={s.hCell} />;
-                const status = byDay.get(d);
-                const selected = d === day;
-                const isToday = ymd(view.y, view.m, d) === today;
-                return (
-                  <Pressable
-                    key={i}
-                    onPress={() => setDay(selected ? null : d)}
-                    style={s.hCell}
-                    accessibilityLabel={`${MONTHS[view.m]} ${d}${status ? `, ${LEGEND.find((l) => l.status === status)!.label}` : ""}`}
-                    accessibilityState={{ selected }}
-                  >
-                    <View style={[s.hDay, isToday && s.hToday, selected && s.hSelected]}>
-                      <Text style={[s.hDayText, selected && s.tagTextLight]}>{d}</Text>
-                    </View>
-                    {status && (
-                      <View style={s.hDayDot}>
-                        <StatusDot status={status} />
-                      </View>
-                    )}
-                  </Pressable>
-                );
-              })}
+        {!history.length ? (
+          <View style={s.gEmptyCard}>
+            <View style={s.gHero}>
+              <View style={[s.gHeroIcon, s.gHeroSide]}>
+                <Feather name="search" size={22} color="#000" />
+              </View>
+              <View style={[s.gHeroIcon, s.gHeroMain]}>
+                <Feather name="clock" size={30} color={GREEN} />
+              </View>
+              <View style={[s.gHeroIcon, s.gHeroSide]}>
+                <Feather name="check" size={22} color="#000" />
+              </View>
             </View>
-          ))}
+            <Text style={s.gEmptyTitle}>No checks yet</Text>
+            <Text style={s.gEmptyBody}>Every diagnosis you finish is saved here by date, so you can see what happened to each gadget.</Text>
+            <Pressable onPress={onDiagnose} style={[s.welcomeBtn, s.gEmptyBtn]} accessibilityRole="button">
+              <Feather name="search" size={19} color={GREEN} />
+              <Text style={s.welcomeBtnText}>Start a diagnosis</Text>
+            </Pressable>
+          </View>
+        ) : (
+          <>
+            {filterGadgets.length > 1 && (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={[s.gFilters, s.hxFilters]} contentContainerStyle={s.gFilterRow}>
+                {[{ id: null as string | null, name: "All gadgets", kind: "" }, ...filterGadgets].map((g) => {
+                  const on = only === g.id;
+                  return (
+                    <Pressable key={g.id ?? "all"} onPress={() => filter(g.id)} style={[s.gChip, s.hxChip, on && s.filterOn]} accessibilityState={{ selected: on }}>
+                      {g.kind ? <Feather name={kindIcon(g.kind)} size={15} color={on ? "#fff" : "#000"} /> : null}
+                      <Text style={[s.gChipText, on && s.tagTextLight]} numberOfLines={1}>
+                        {g.name}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
+            )}
 
-          <View style={s.hLegend}>
-            {LEGEND.map((l) => (
-              <View key={l.status} style={s.hLegendItem}>
-                <StatusDot status={l.status} />
-                <Text style={s.hLegendText}>{l.label}</Text>
+            <View style={s.hCal}>
+              <View style={s.hMonthRow}>
+                <Text style={s.hMonth}>
+                  {MONTHS[view.m]} {view.y}
+                </Text>
+                <Pressable onPress={() => move(-1)} style={s.hxNav} hitSlop={6} accessibilityLabel="Previous month">
+                  <Feather name="chevron-left" size={20} color="#000" />
+                </Pressable>
+                <Pressable onPress={() => move(1)} style={s.hxNav} hitSlop={6} accessibilityLabel="Next month">
+                  <Feather name="chevron-right" size={20} color="#000" />
+                </Pressable>
+              </View>
+
+              {/* The month in three numbers; their dots double as the calendar's legend. */}
+              <View style={s.hxStats}>
+                {(["checked", "fixed", "pro"] as const).map((st) => (
+                  <View key={st} style={s.hxStat}>
+                    <Text style={s.hxStatNum}>{st === "checked" ? monthChecks.length : count(st)}</Text>
+                    <View style={s.hxStatRow}>
+                      {st !== "checked" && <StatusDot status={st} />}
+                      <Text style={s.hxStatLabel}>{st === "checked" ? "Checks" : STATUS_BADGE[st].label}</Text>
+                    </View>
+                  </View>
+                ))}
+              </View>
+
+              <View style={s.hWeek}>
+                {WEEKDAYS.map((w, i) => (
+                  <Text key={i} style={[s.hCell, s.hWeekday]}>
+                    {w}
+                  </Text>
+                ))}
+              </View>
+              {weeks.map((week, wi) => (
+                <View key={wi} style={s.hWeek}>
+                  {week.map((d, i) => {
+                    if (d === null) return <View key={i} style={s.hCell} />;
+                    const status = byDay.get(d);
+                    const selected = d === day;
+                    const isToday = ymd(view.y, view.m, d) === today;
+                    return (
+                      <Pressable
+                        key={i}
+                        onPress={() => {
+                          setDay(selected ? null : d);
+                          setOpen(null);
+                        }}
+                        style={s.hCell}
+                        accessibilityLabel={`${MONTHS[view.m]} ${d}${status ? `, ${STATUS_BADGE[status].label}` : ""}`}
+                        accessibilityState={{ selected }}
+                      >
+                        <View style={[s.hDay, isToday && s.hToday, selected && s.hSelected]}>
+                          <Text style={[s.hDayText, !status && s.hxDayQuiet, selected && s.tagTextLight]}>{d}</Text>
+                        </View>
+                        {status && (
+                          <View style={s.hDayDot}>
+                            <StatusDot status={status} />
+                          </View>
+                        )}
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              ))}
+            </View>
+
+            {day !== null && (
+              <View style={s.hxShowing}>
+                <Text style={s.hxShowingText}>
+                  Showing {MONTHS[view.m].slice(0, 3)} {day}
+                </Text>
+                <Pressable onPress={() => setDay(null)} hitSlop={8} accessibilityRole="button">
+                  <Text style={s.hxShowAll}>Show all</Text>
+                </Pressable>
+              </View>
+            )}
+
+            {groups.map((grp) => (
+              <View key={grp.date}>
+                <Text style={[s.monoLabel, s.hxDayHead]}>{dayLabel(grp.date).toUpperCase()}</Text>
+                {grp.items.map((c) => {
+                  const b = STATUS_BADGE[c.status];
+                  const g = gadgets.find((x) => x.id === c.gadget);
+                  const isOpen = open === c.id;
+                  return (
+                    <Pressable key={c.id} onPress={() => toggle(c.id)} style={s.hxEntry} accessibilityRole="button" accessibilityState={{ expanded: isOpen }}>
+                      <View style={s.gTop}>
+                        <View style={[s.hxBadge, { backgroundColor: b.bg }]}>
+                          <Feather name={b.icon} size={18} color={b.fg} />
+                        </View>
+                        <View style={s.gText}>
+                          <Text style={s.hxTitle} numberOfLines={2}>
+                            {c.title}
+                          </Text>
+                          <Text style={s.hxDetail} numberOfLines={2}>
+                            {c.detail}
+                          </Text>
+                          <View style={s.hxMeta}>
+                            {g && <Feather name={kindIcon(g.kind)} size={13} color="rgba(0,0,0,0.45)" />}
+                            <Text style={s.hxMetaText} numberOfLines={1}>
+                              {g ? g.name : "Removed gadget"} · {b.label}
+                            </Text>
+                          </View>
+                        </View>
+                      </View>
+                      {isOpen && (
+                        <View style={s.hxActions}>
+                          {c.status !== "fixed" && (
+                            <Pressable
+                              onPress={() => {
+                                onChange(history.map((x) => (x.id === c.id ? { ...x, status: "fixed" } : x)));
+                                setOpen(null);
+                              }}
+                              style={[s.welcomeBtn, s.hxAction]}
+                              accessibilityRole="button"
+                            >
+                              <Feather name="check" size={17} color={GREEN} />
+                              <Text style={s.welcomeBtnText}>Mark as fixed</Text>
+                            </Pressable>
+                          )}
+                          {/* Two taps instead of a dialog: Alert has no buttons on web. */}
+                          <Pressable
+                            onPress={() => {
+                              if (!confirm) return setConfirm(true);
+                              onChange(history.filter((x) => x.id !== c.id));
+                              setOpen(null);
+                              setConfirm(false);
+                            }}
+                            style={[s.gRemove, s.hxAction, s.hxRemove]}
+                            accessibilityRole="button"
+                          >
+                            <Feather name="trash-2" size={17} color="#dc2626" />
+                            <Text style={s.gRemoveText}>{confirm ? "Tap again" : "Remove"}</Text>
+                          </Pressable>
+                        </View>
+                      )}
+                    </Pressable>
+                  );
+                })}
               </View>
             ))}
-          </View>
-        </View>
 
-        <Text style={[s.monoLabel, s.hSection]}>
-          {gadget ? `${gadget.name.toUpperCase()} · ` : ""}
-          {label.toUpperCase()}
-        </Text>
-        {shown.map((c) => (
-          <View key={c.date + c.title} style={s.hEntry}>
-            <View style={s.hDate}>
-              <Text style={s.hDateMonth}>{MONTHS[Number(c.date.slice(5, 7)) - 1].slice(0, 3).toUpperCase()}</Text>
-              <Text style={s.hDateDay}>{Number(c.date.slice(8))}</Text>
-            </View>
-            <View style={s.gText}>
-              <Text style={s.gName} numberOfLines={1}>
-                {c.title}
-              </Text>
-              <Text style={s.gIssue} numberOfLines={1}>
-                {c.detail}
-              </Text>
-            </View>
-            <StatusDot status={c.status} big />
-          </View>
-        ))}
-        {!shown.length && (
-          <Text style={[s.msgText, s.dim, s.gEmpty]}>
-            {!history.length ? "No checks yet." : `No checks ${day !== null ? "on this day" : "this month"}.`}
-          </Text>
+            {!shown.length && (
+              <View style={s.hxNone}>
+                <Text style={[s.msgText, s.dim]}>
+                  No checks {day !== null ? "on this day" : `in ${MONTHS[view.m]}`}.
+                </Text>
+                {day === null && checks.length > 0 && (
+                  <Pressable onPress={() => goTo(monthOf(checks[0].date))} hitSlop={8} accessibilityRole="button">
+                    <Text style={s.hxShowAll}>Jump to latest</Text>
+                  </Pressable>
+                )}
+              </View>
+            )}
+          </>
         )}
       </ScrollView>
-
-      {/* Over the page, under the gadget button; a child of this full-page view so Android delivers its taps. */}
-      {picking && (
-        <Pop from="right" style={s.hMenu}>
-          {gadgets.map((g) => (
-            <Pressable key={g.id} onPress={() => pick(g)} style={s.attachItem} accessibilityRole="button">
-              <Feather name={kindIcon(g.kind)} size={17} color="#000" />
-              <Text style={s.attachText}>{g.name}</Text>
-            </Pressable>
-          ))}
-        </Pop>
-      )}
-
     </View>
   );
 }
@@ -3172,7 +3308,8 @@ function Card(p: { icon: "camera" | "message-square"; title: string; subtitle: s
 }
 
 const s = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: "#F3F3F3" },
+  // overflow: the Home dot circle is wider than the screen; unclipped, browsers scroll the page sideways.
+  screen: { flex: 1, backgroundColor: "#F3F3F3", overflow: "hidden" },
   flex: { flex: 1 },
 
   header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 20 },
@@ -3303,13 +3440,32 @@ const s = StyleSheet.create({
   toggle: { width: 48, height: 28, borderRadius: 14, padding: 3 },
   knob: { width: 22, height: 22, borderRadius: 11, backgroundColor: "#fff" },
   // History, measured from the mockup.
-  hPicker: { flexDirection: "row", alignItems: "center", gap: 8, height: 48, paddingHorizontal: 20, borderRadius: 100, backgroundColor: "#fff" },
-  hPickerText: { fontFamily: "Poppins_500Medium", fontSize: 15, color: "#000" },
-  hMenu: { position: "absolute", right: 20, top: 76, zIndex: 5, padding: 6, borderRadius: 22, backgroundColor: "#fff", borderWidth: 1, borderColor: "rgba(0,0,0,0.07)" },
+  hxFilters: { marginTop: 0, marginBottom: 12 },
+  hxChip: { paddingRight: 16, gap: 6, maxWidth: 200 },
+  hxNav: { width: 36, height: 36, borderRadius: 18, backgroundColor: "#F3F3F3", alignItems: "center", justifyContent: "center", marginLeft: 8 },
+  hxStats: { flexDirection: "row", gap: 8, marginBottom: 12 },
+  hxStat: { flex: 1, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 16, backgroundColor: "#F3F3F3" },
+  hxStatNum: { fontFamily: "Poppins_600SemiBold", fontSize: 20, lineHeight: 26, color: "#000" },
+  hxStatRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+  hxStatLabel: { fontFamily: "Poppins_400Regular", fontSize: 12, color: "rgba(0,0,0,0.55)" },
+  hxDayQuiet: { color: "rgba(0,0,0,0.55)" },
+  hxShowing: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 14, paddingHorizontal: 6 },
+  hxShowingText: { fontFamily: "Poppins_500Medium", fontSize: 14, color: "#000" },
+  hxShowAll: { fontFamily: "Poppins_600SemiBold", fontSize: 14, color: "#000", textDecorationLine: "underline" },
+  hxDayHead: { marginTop: 22, marginBottom: 2, paddingHorizontal: 6 },
+  hxEntry: { marginTop: 10, padding: 16, borderRadius: 22, backgroundColor: "#fff" },
+  hxBadge: { width: 42, height: 42, borderRadius: 21, alignItems: "center", justifyContent: "center", alignSelf: "flex-start" },
+  hxTitle: { fontFamily: "Poppins_600SemiBold", fontSize: 15, lineHeight: 21, color: "#000" },
+  hxDetail: { fontFamily: "Poppins_400Regular", fontSize: 14, lineHeight: 20, color: "rgba(0,0,0,0.6)", marginTop: 2 },
+  hxMeta: { flexDirection: "row", alignItems: "center", gap: 5, marginTop: 8 },
+  hxMetaText: { flexShrink: 1, fontFamily: "Poppins_500Medium", fontSize: 12, color: "rgba(0,0,0,0.45)" },
+  hxActions: { flexDirection: "row", gap: 8, marginTop: 14 },
+  hxAction: { flex: 1, flexDirection: "row", gap: 8, height: 46, marginTop: 0 },
+  hxRemove: { flex: 0, paddingHorizontal: 18 },
+  hxNone: { alignItems: "center", gap: 8, marginTop: 24 },
   hCal: { padding: 20, borderRadius: 25, backgroundColor: "#fff" },
-  hMonthRow: { flexDirection: "row", alignItems: "center", marginBottom: 10 },
+  hMonthRow: { flexDirection: "row", alignItems: "center", marginBottom: 14 },
   hMonth: { flex: 1, fontFamily: "Poppins_600SemiBold", fontSize: 17, color: "#000" },
-  hNext: { marginLeft: 24 },
   hWeek: { flexDirection: "row" },
   hCell: { flex: 1, height: 44, alignItems: "center", justifyContent: "center" },
   hWeekday: { fontFamily: "Poppins_500Medium", fontSize: 12, lineHeight: 32, textAlign: "center", color: "rgba(0,0,0,0.4)" },
@@ -3318,19 +3474,11 @@ const s = StyleSheet.create({
   hSelected: { backgroundColor: "#000" },
   hDayText: { fontFamily: "Poppins_400Regular", fontSize: 15, color: "#000" },
   hDayDot: { position: "absolute", bottom: -2 }, // just under the day circle
-  hLegend: { flexDirection: "row", justifyContent: "center", flexWrap: "wrap", gap: 18, marginTop: 14 },
-  hLegendItem: { flexDirection: "row", alignItems: "center", gap: 7 },
-  hLegendText: { fontFamily: "Poppins_400Regular", fontSize: 13, color: "#000" },
   dot: { width: 6, height: 6, borderRadius: 3 },
   dotBig: { width: 10, height: 10, borderRadius: 5 },
   dotFixed: { backgroundColor: GREEN },
   dotChecked: { backgroundColor: "#000" },
   dotPro: { borderWidth: 1, borderColor: "#000", backgroundColor: "#fff" },
-  hSection: { marginTop: 22, marginBottom: 2 },
-  hEntry: { flexDirection: "row", alignItems: "center", marginTop: 12, paddingVertical: 18, paddingHorizontal: 20, borderRadius: 25, backgroundColor: "#fff" },
-  hDate: { width: 40, alignItems: "center", marginRight: 2 },
-  hDateMonth: { fontFamily: "Poppins_500Medium", fontSize: 11, lineHeight: 14, color: "rgba(0,0,0,0.5)" },
-  hDateDay: { fontFamily: "Poppins_600SemiBold", fontSize: 22, lineHeight: 28, color: "#000" },
   // New-account questions.
   setup: { paddingHorizontal: 20, paddingTop: 26, paddingBottom: 20 },
   setupTitle: { fontFamily: "Poppins_600SemiBold", fontSize: 26, lineHeight: 34, color: "#000", marginTop: 8 },
@@ -3368,6 +3516,7 @@ const s = StyleSheet.create({
   googleText: { fontFamily: "Poppins_600SemiBold", fontSize: 15, color: "#000" },
   welcomeLink: { fontFamily: "Poppins_400Regular", fontSize: 12, textAlign: "center", color: "rgba(0,0,0,0.5)", marginTop: 12 }, // the Home logo, scaled up to the start page's size
   // Centered horizontally, with the circle's middle ~90pt above the bottom (behind the message bar).
+  glowClip: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, overflow: "hidden" },
   glow: { position: "absolute", left: "50%", marginLeft: -GLOW_R, bottom: GLOW_Y - GLOW_R },
   greeting: { fontFamily: SERIF, fontSize: 28, lineHeight: 36, textAlign: "center", color: "#000", marginTop: 18, marginBottom: 28 },
   // Measured from the logo artwork (287 tall), scaled to 80: the D's right side is a full half-circle.
