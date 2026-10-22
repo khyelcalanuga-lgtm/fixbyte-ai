@@ -8,7 +8,7 @@
       "versionCode": 2
     },
     "scheme": "fixbyteai",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "automatic",
     "backgroundColor": "#F3F3F3",
     "web": {
       "output": "server"

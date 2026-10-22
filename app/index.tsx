@@ -15,6 +15,7 @@ import {
   ScrollView,
   Share,
   StyleSheet,
+  useColorScheme,
   Text,
   TextInput,
   View,
@@ -24,7 +25,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 // Moves with the keyboard as it slides on phones (see lib/keyboard.tsx).
 import { KeyboardAvoidingView } from "../lib/keyboard";
 import { BlurTargetView, BlurView } from "expo-blur";
-import { LinearGradient } from "expo-linear-gradient";
+import { lensStyle } from "../lib/refraction";
 import { GlassView, isGlassEffectAPIAvailable, isLiquidGlassAvailable } from "expo-glass-effect";
 import { StatusBar } from "expo-status-bar";
 import * as ImagePicker from "expo-image-picker";
@@ -94,6 +95,56 @@ type Diag = { photo: boolean; device?: string; finding?: string; software?: stri
 
 const TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 const GREEN = "#7CEB5A";
+
+// Dark mode. Colours go through two functions by role:
+// - surface(): backgrounds. White cards turn dark grey; black surfaces (buttons, hero cards, selected chips) stay
+//   dark, lifted one step so they read as raised; light greys deepen. Layered greys, never pure black.
+// - tone(): ink (text, icons, outlines). Black ink turns soft off-white, not pure white, which is easier on the eyes;
+//   white ink (it sits on black surfaces, which stay dark) is unchanged.
+// In light mode both return the colour unchanged. GREEN, reds, ON_ACCENT (black on green) and WHITE stay as they are.
+let DARK = false;
+const ON_ACCENT = "#000";
+const WHITE = "#fff";
+const INK = "230,230,232"; // dark-mode text, as rgb for tints
+const DARK_SURFACES: Record<string, string> = {
+  "#fff": "#1C1C1F", // cards
+  "#000": "#2E2E33", // buttons, hero cards, selected chips: a step above the cards
+  "#F3F3F3": "#2A2A2E", // soft fills inside cards
+  "#F2F2F2": "#2A2A2E",
+  "#E8E8E8": "#2A2A2E",
+  "#EDEDED": "#38383D",
+  "#E3E3E3": "#38383D",
+  "#DDDDDD": "#38383D",
+  "#ddd": "#38383D",
+  "#D9D9D9": "#38383D",
+  "#CFCFCF": "#48484D", // switch, off
+  "#2D2D2D": GREEN, // switch, on
+  "#2A2A2A": "#3A3A40",
+  "#EAF7E5": "#1F2A1C",
+  "#D5E2D5": "#33402F",
+  "#FFD9D2": "#43282A",
+  "#FDECEC": "#3A2224",
+};
+const DARK_INK: Record<string, string> = {
+  "#000": `rgb(${INK})`,
+  "#E3E3E3": "#38383D", // the progress ring's track
+  "#D5E2D5": "#33402F",
+  "#CFCFCF": "#48484D",
+  "#2D2D2D": GREEN,
+};
+function surface(col: string): string {
+  if (!DARK) return col;
+  if (DARK_SURFACES[col]) return DARK_SURFACES[col];
+  const m = /^rgba\(0,0,0,([\d.]+)\)$/.exec(col); // black overlays (dividers, the tab lens) turn light
+  return m ? `rgba(${INK},${m[1]})` : col;
+}
+function tone(col: string): string {
+  if (!DARK) return col;
+  if (DARK_INK[col]) return DARK_INK[col];
+  const m = /^rgba\(0,0,0,([\d.]+)\)$/.exec(col); // secondary text keeps its transparency
+  return m ? `rgba(${INK},${m[1]})` : col;
+}
+const PAGE_BG = () => (DARK ? "#111113" : "#F3F3F3"); // the page, below the cards
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const NATIVE = Platform.OS !== "web"; // Animated's native driver doesn't exist on web
 const STAGGER_MS = 350; // gap between two chat bubbles arriving in the same turn
@@ -125,6 +176,9 @@ export default function App() {
   const [fontsLoaded] = useFonts({ Poppins_400Regular, Poppins_500Medium, Poppins_600SemiBold });
   const [start, setStart] = useState(true); // the start page, until it has faded out
   const [settings, setSettings] = useState(loadSettings); // name, email and preferences, saved on the device
+  const scheme = useColorScheme();
+  // Set before anything below renders: every component reads `s`, tone() and surface() from it.
+  applyTheme(settings.theme === "dark" || (settings.theme === "system" && scheme === "dark"));
   const updateSettings = (patch: Partial<Settings>) =>
     setSettings((cur) => {
       const next = { ...cur, ...patch };
@@ -435,7 +489,7 @@ export default function App() {
 
   return (
     <SafeAreaView style={s.screen} edges={["top", "left", "right"]}>
-      <StatusBar style="dark" />
+      <StatusBar style={DARK ? "light" : "dark"} />
       <BlurTargetView ref={glassTarget} style={s.flex}>
         {!signedIn ? (
           authMode ? (
@@ -549,7 +603,7 @@ export default function App() {
               <>
                 <View style={s.header}>
                   <Pressable onPress={() => setTab("gadgets")} style={s.circle} accessibilityLabel="My gadgets">
-                    <Feather name="smartphone" size={20} color="#000" />
+                    <Feather name="smartphone" size={20} color={tone("#000")} />
                   </Pressable>
                   <Text style={s.title}>FixByte AI</Text>
                   {/* ponytail: initial-letter avatar (from the profile name); swap for a photo via <Image> when there's one */}
@@ -573,11 +627,11 @@ export default function App() {
               <>
                 <View style={s.header}>
                   <Pressable onPress={reset} style={s.circle} accessibilityLabel="Back">
-                    <Feather name="arrow-left" size={20} color="#000" />
+                    <Feather name="arrow-left" size={20} color={tone("#000")} />
                   </Pressable>
                   <Text style={s.title}>New diagnosis</Text>
                   <Pressable onPress={menu} style={s.circle} accessibilityLabel="More options">
-                    <Feather name="more-horizontal" size={20} color="#000" />
+                    <Feather name="more-horizontal" size={20} color={tone("#000")} />
                   </Pressable>
                 </View>
                 {time && <Text style={s.time}>TODAY, {time}</Text>}
@@ -610,7 +664,7 @@ export default function App() {
                           <Text style={s.verdictTitle}>{t.diagnosis.title}</Text>
                           <View style={s.verdictLink}>
                             <Text style={[s.msgText, s.dim]}>View diagnosis</Text>
-                            <Feather name="chevron-right" size={16} color="rgba(0,0,0,0.5)" />
+                            <Feather name="chevron-right" size={16} color={tone("rgba(0,0,0,0.5)")} />
                           </View>
                         </Pressable>
                       </Pop>
@@ -675,12 +729,12 @@ export default function App() {
                   {!result && <Usage used={used} />}
                   {forGadget && !result && (
                     <View style={s.forTag}>
-                      <Feather name={kindIcon(forGadget.kind)} size={16} color="#000" />
+                      <Feather name={kindIcon(forGadget.kind)} size={16} color={tone("#000")} />
                       <Text style={s.forTagText} numberOfLines={1}>
                         Checking your {forGadget.name}
                       </Text>
                       <Pressable onPress={() => setForGadget(null)} hitSlop={10} accessibilityLabel="Stop checking this gadget">
-                        <Feather name="x" size={16} color="rgba(0,0,0,0.5)" />
+                        <Feather name="x" size={16} color={tone("rgba(0,0,0,0.5)")} />
                       </Pressable>
                     </View>
                   )}
@@ -699,7 +753,7 @@ export default function App() {
                     <View style={s.preview}>
                       <Image source={{ uri: image }} style={s.thumb} />
                       <Pressable onPress={() => setImage(null)} style={s.remove} accessibilityLabel="Remove photo">
-                        <Feather name="x" size={14} color="#fff" />
+                        <Feather name="x" size={14} color={tone("#fff")} />
                       </Pressable>
                     </View>
                   )}
@@ -713,7 +767,7 @@ export default function App() {
                       accessibilityLabel={attachOpen ? "Close attach menu" : "Attach a photo"}
                       accessibilityState={{ expanded: attachOpen }}
                     >
-                      <Feather name={attachOpen ? "x" : "paperclip"} size={17} color="#000" />
+                      <Feather name={attachOpen ? "x" : "paperclip"} size={17} color={tone("#000")} />
                     </Pressable>
                     <TextInput
                       ref={input}
@@ -722,12 +776,12 @@ export default function App() {
                       onChangeText={setText}
                       onSubmitEditing={() => send()}
                       placeholder={home ? "Describe the problem..." : result ? "Ask a follow-up..." : "Add more details..."}
-                      placeholderTextColor="rgba(0,0,0,0.2)"
+                      placeholderTextColor={tone("rgba(0,0,0,0.2)")}
                       accessibilityLabel="Message"
                       style={s.input}
                     />
                     <Pressable onPress={() => send()} disabled={busy || out} style={[s.send, (busy || out) && s.disabled]} accessibilityLabel="Send">
-                      <Feather name="arrow-up" size={18} color="#fff" />
+                      <Feather name="arrow-up" size={18} color={tone("#fff")} />
                     </Pressable>
                   </View>
                 </>
@@ -738,11 +792,11 @@ export default function App() {
             {attachOpen && (
               <Pop from="left" style={s.attachMenu}>
                 <Pressable onPress={() => attach(true)} style={s.attachItem} accessibilityRole="button">
-                  <Feather name="camera" size={17} color="#000" />
+                  <Feather name="camera" size={17} color={tone("#000")} />
                   <Text style={s.attachText}>Take a photo</Text>
                 </Pressable>
                 <Pressable onPress={() => attach(false)} style={s.attachItem} accessibilityRole="button">
-                  <Feather name="image" size={17} color="#000" />
+                  <Feather name="image" size={17} color={tone("#000")} />
                   <Text style={s.attachText}>Choose from gallery</Text>
                 </Pressable>
               </Pop>
@@ -809,7 +863,7 @@ function DotGlow() {
     <View style={s.glowClip} pointerEvents="none">
       <Svg width={GLOW_R * 2} height={GLOW_R * 2} style={s.glow}>
         {GLOW_DOTS.map((p, i) => (
-          <Circle key={i} cx={p.x} cy={p.y} r={1.5} fill="#000" opacity={p.o} />
+          <Circle key={i} cx={p.x} cy={p.y} r={1.5} fill={tone("#000")} opacity={p.o} />
         ))}
       </Svg>
     </View>
@@ -919,11 +973,12 @@ const newGadget = (name: string, kind: string): Gadget => ({
 });
 
 // Status colours carry meaning: green = fixed, black = needs a pro, grey = checked or new.
-const STATUS_PILL: Record<CheckStatus | "new", { label: string; icon?: FeatherName; style: object; text?: object }> = {
-  fixed: { label: "Fixed", icon: "check", style: { backgroundColor: GREEN } },
-  checked: { label: "Checked", style: { backgroundColor: "#EDEDED" } },
-  pro: { label: "Needs a pro", icon: "alert-triangle", style: { backgroundColor: "#000" }, text: { color: "#fff" } },
-  new: { label: "New", style: { backgroundColor: "#F3F3F3" }, text: { color: "rgba(0,0,0,0.55)" } },
+// Raw light-mode colours, themed where drawn (this table is built once, at load). fg on green stays black.
+const STATUS_PILL: Record<CheckStatus | "new", { label: string; icon?: FeatherName; bg: string; fg: string }> = {
+  fixed: { label: "Fixed", icon: "check", bg: GREEN, fg: ON_ACCENT },
+  checked: { label: "Checked", bg: "#EDEDED", fg: "#000" },
+  pro: { label: "Needs a pro", icon: "alert-triangle", bg: "#000", fg: "#fff" },
+  new: { label: "New", bg: "#F3F3F3", fg: "rgba(0,0,0,0.55)" },
 };
 
 function Gadgets({
@@ -996,13 +1051,13 @@ function Gadgets({
             {/* A small cluster of devices: the one image on an otherwise quiet page. */}
             <View style={s.gHero}>
               <View style={[s.gHeroIcon, s.gHeroSide]}>
-                <Feather name="watch" size={22} color="#000" />
+                <Feather name="watch" size={22} color={tone("#000")} />
               </View>
               <View style={[s.gHeroIcon, s.gHeroMain]}>
                 <Feather name="smartphone" size={30} color={GREEN} />
               </View>
               <View style={[s.gHeroIcon, s.gHeroSide]}>
-                <Feather name="monitor" size={22} color="#000" />
+                <Feather name="monitor" size={22} color={tone("#000")} />
               </View>
             </View>
             <Text style={s.gEmptyTitle}>No gadgets yet</Text>
@@ -1017,18 +1072,18 @@ function Gadgets({
         {gadgets.length > 0 && (
           <>
             <View style={s.gSearch}>
-              <Feather name="search" size={19} color="rgba(0,0,0,0.45)" />
+              <Feather name="search" size={19} color={tone("rgba(0,0,0,0.45)")} />
               <TextInput
                 value={query}
                 onChangeText={setQuery}
                 placeholder="Search your gadgets"
-                placeholderTextColor="rgba(0,0,0,0.3)"
+                placeholderTextColor={tone("rgba(0,0,0,0.3)")}
                 accessibilityLabel="Search your gadgets"
                 style={s.gSearchInput}
               />
               {!!query && (
                 <Pressable onPress={() => setQuery("")} hitSlop={10} accessibilityLabel="Clear search">
-                  <Feather name="x" size={18} color="rgba(0,0,0,0.45)" />
+                  <Feather name="x" size={18} color={tone("rgba(0,0,0,0.45)")} />
                 </Pressable>
               )}
             </View>
@@ -1060,7 +1115,7 @@ function Gadgets({
                 <Pressable key={g.id} onPress={() => toggle(g.id)} style={s.gCard} accessibilityRole="button" accessibilityState={{ expanded: isOpen }}>
                   <View style={s.gTop}>
                     <View style={s.gIcon}>
-                      <Feather name={kindIcon(g.kind)} size={24} color="#000" />
+                      <Feather name={kindIcon(g.kind)} size={24} color={tone("#000")} />
                     </View>
                     <View style={s.gText}>
                       <Text style={s.gName} numberOfLines={1}>
@@ -1068,9 +1123,9 @@ function Gadgets({
                       </Text>
                       <Text style={s.gKind}>{g.kind}</Text>
                     </View>
-                    <View style={[s.gStatus, pill.style]}>
-                      {pill.icon && <Feather name={pill.icon} size={13} color={pill.text ? "#fff" : "#000"} />}
-                      <Text style={[s.gStatusText, pill.text]}>{pill.label}</Text>
+                    <View style={[s.gStatus, { backgroundColor: surface(pill.bg) }]}>
+                      {pill.icon && <Feather name={pill.icon} size={13} color={tone(pill.fg)} />}
+                      <Text style={[s.gStatusText, { color: tone(pill.fg) }]}>{pill.label}</Text>
                     </View>
                   </View>
                   <View style={s.gDivider} />
@@ -1125,7 +1180,7 @@ function AddGadget({ onAdd, onCancel }: { onAdd: (g: Gadget) => void; onCancel: 
           setError("");
         }}
         placeholder="Name, e.g. iPhone 13"
-        placeholderTextColor="rgba(0,0,0,0.3)"
+        placeholderTextColor={tone("rgba(0,0,0,0.3)")}
         autoFocus
         returnKeyType="done"
         onSubmitEditing={add}
@@ -1138,7 +1193,7 @@ function AddGadget({ onAdd, onCancel }: { onAdd: (g: Gadget) => void; onCancel: 
           const on = kind === k.label;
           return (
             <Pressable key={k.label} onPress={() => setKind(k.label)} style={[s.gKindTile, on && s.setupOn]} accessibilityRole="radio" accessibilityState={{ checked: on }}>
-              <Feather name={k.icon} size={20} color={on ? "#fff" : "#000"} />
+              <Feather name={k.icon} size={20} color={on ? tone("#fff") : tone("#000")} />
               <Text style={[s.gKindText, on && s.tagTextLight]} numberOfLines={1}>
                 {k.label}
               </Text>
@@ -1174,35 +1229,36 @@ const TABS: { tab: Tab; icon: keyof typeof MaterialCommunityIcons.glyphMap | "so
 const NATIVE_GLASS = Platform.OS === "ios" && isLiquidGlassAvailable() && isGlassEffectAPIAvailable();
 
 // One piece of Liquid Glass. On iOS 26 it's Apple's real material (lensing, and it lifts when touched).
-// Elsewhere it's drawn to match: a light blur of the page behind (Android reads it from `target`, the page wrapped
-// in a BlurTargetView), almost no tint, a rim that catches light along the top edge, and a sheen that fades fast.
+// Elsewhere: a flat blur of the page behind (Android reads it from `target`, the page wrapped in a BlurTargetView)
+// with almost no tint; on the web the backdrop is also refracted (lib/refraction.web.ts). Both get a hairline along the top and bottom edges that fades out toward the ends.
 function Glass({ target, style, children, onLayout }: { target: RefObject<View | null>; style?: ComponentProps<typeof View>["style"]; children: ReactNode; onLayout?: ComponentProps<typeof View>["onLayout"] }) {
   if (NATIVE_GLASS) {
     return (
-      <GlassView glassEffectStyle="regular" isInteractive colorScheme="light" style={[s.glassNative, style]} onLayout={onLayout}>
+      <GlassView glassEffectStyle="regular" isInteractive colorScheme={DARK ? "dark" : "light"} style={[s.glassNative, style]} onLayout={onLayout}>
+        <GlassEdges />
         {children}
       </GlassView>
     );
   }
   return (
-    // The 1pt gradient behind the content shows only around the edge: that's the rim.
-    <LinearGradient
-      colors={["rgba(255,255,255,0.95)", "rgba(255,255,255,0.35)", "rgba(255,255,255,0.15)", "rgba(255,255,255,0.6)"]}
-      locations={[0, 0.35, 0.7, 1]}
-      style={s.glassRim}
-    >
-      <View style={[s.glass, style]} onLayout={onLayout}>
-        <BlurView intensity={28} tint="light" blurTarget={target} blurMethod="dimezisBlurViewSdk31Plus" style={StyleSheet.absoluteFill} />
-        <LinearGradient
-          pointerEvents="none"
-          colors={["rgba(255,255,255,0.55)", "rgba(255,255,255,0.08)", "rgba(255,255,255,0)", "rgba(255,255,255,0.18)"]}
-          locations={[0, 0.3, 0.7, 1]}
-          style={StyleSheet.absoluteFill}
-        />
-        {children}
-      </View>
-    </LinearGradient>
+    <View style={[s.glass, style]} onLayout={onLayout}>
+      {Platform.OS === "web" ? (
+        // Web: the backdrop is bent at the edges (refraction) as well as blurred, in Chromium browsers.
+        <View pointerEvents="none" style={[StyleSheet.absoluteFill, lensStyle()]} />
+      ) : (
+        <BlurView intensity={28} tint={DARK ? "dark" : "light"} blurTarget={target} blurMethod="dimezisBlurViewSdk31Plus" style={StyleSheet.absoluteFill} />
+      )}
+      <GlassEdges />
+      {children}
+    </View>
   );
+}
+
+// The glass's only stroke: a white hairline on the top and bottom edges that follows the capsule's curve round
+// both ends and tapers to nothing at the left and right sides (a border on just those two sides, with the
+// capsule's radius, draws exactly that), like light catching the edge. Never a black outline.
+function GlassEdges() {
+  return <View pointerEvents="none" style={s.glassEdges} />;
 }
 
 // Bottom bar, floating over the page in glass: Home on its own, then My gadgets, History and Profile. The current
@@ -1240,7 +1296,7 @@ function TabBar({ active, onTab, target }: { active: Tab; onTab: (t: Tab) => voi
     <View style={s.tabBar} pointerEvents="box-none">
       <Pressable onPress={() => onTab("home")} style={s.glassShadow} accessibilityLabel="Home">
         <Glass target={target} style={s.tabHome}>
-          <MaterialCommunityIcons name="home-variant" size={25} color="#000" />
+          <MaterialCommunityIcons name="home-variant" size={25} color={tone("#000")} />
         </Glass>
       </Pressable>
       <View style={[s.glassShadow, s.flex]}>
@@ -1253,10 +1309,10 @@ function TabBar({ active, onTab, target }: { active: Tab; onTab: (t: Tab) => voi
                 {/* The current tab's icon turns the app's green; the label stays dark so it stays readable. */}
                 {icon === "solid-phone" ? (
                   <View style={s.tabIconBox}>
-                    <View style={[s.solidPhone, { backgroundColor: on ? GREEN : "rgba(0,0,0,0.7)" }]} />
+                    <View style={[s.solidPhone, { backgroundColor: on ? GREEN : tone("rgba(0,0,0,0.7)") }]} />
                   </View>
                 ) : (
-                  <MaterialCommunityIcons name={icon} size={24} color={on ? GREEN : "rgba(0,0,0,0.7)"} />
+                  <MaterialCommunityIcons name={icon} size={24} color={on ? GREEN : tone("rgba(0,0,0,0.7)")} />
                 )}
                 <Text style={[s.tabLabel, on && s.tabLabelOn]}>{short}</Text>
               </Pressable>
@@ -1275,6 +1331,7 @@ type Settings = {
   reminders: boolean;
   language: string;
   region: string;
+  theme: "system" | "light" | "dark";
   devices: string[]; // gadget kinds from the new-account questions, passed to the AI as a hint
   skill: string; // repair experience from the new-account questions; the AI pitches its guides to it
 };
@@ -1285,6 +1342,7 @@ const DEFAULT_SETTINGS: Settings = {
   reminders: true,
   language: "English",
   region: "Metro Manila",
+  theme: "system",
   devices: [],
   skill: "",
 };
@@ -1328,7 +1386,12 @@ const TERMS: Doc = [
   { heading: "Changes", body: "These terms may change as the app grows. The latest version is always here." },
 ];
 
-type ProfilePage = "edit" | "language" | "region" | "security" | "help" | "privacy" | "terms" | "about";
+type ProfilePage = "edit" | "appearance" | "language" | "region" | "security" | "help" | "privacy" | "terms" | "about";
+const THEMES: { value: Settings["theme"]; label: string; short: string }[] = [
+  { value: "system", label: "Same as my phone", short: "System" },
+  { value: "light", label: "Light", short: "Light" },
+  { value: "dark", label: "Dark", short: "Dark" },
+];
 type Row = { icon: FeatherName; label: string; value?: string; onPress: () => void };
 
 // Profile: who's signed in, totals from the gadgets and history, settings and support pages.
@@ -1398,6 +1461,24 @@ function Profile({
       </SubPage>
     );
   }
+  if (page === "appearance") {
+    return (
+      <SubPage title="Appearance" onBack={back}>
+        <Text style={[s.msgText, s.dim, s.pHint]}>Light, dark, or follow your phone's setting.</Text>
+        <View style={s.pSettings}>
+          {THEMES.map((t) => {
+            const on = settings.theme === t.value;
+            return (
+              <Pressable key={t.value} onPress={() => onChange({ theme: t.value })} style={s.pRow} accessibilityRole="radio" accessibilityState={{ checked: on }}>
+                <Text style={s.pRowLabel}>{t.label}</Text>
+                {on && <Feather name="check" size={20} color={tone("#000")} />}
+              </Pressable>
+            );
+          })}
+        </View>
+      </SubPage>
+    );
+  }
   if (page === "language" || page === "region") {
     const key = page;
     return (
@@ -1422,7 +1503,7 @@ function Profile({
                 accessibilityState={{ checked: on }}
               >
                 <Text style={s.pRowLabel}>{o}</Text>
-                {on && <Feather name="check" size={18} color="#000" />}
+                {on && <Feather name="check" size={18} color={tone("#000")} />}
               </Pressable>
             );
           })}
@@ -1451,13 +1532,13 @@ function Profile({
             style={[s.googleBtn, s.pSignOut]}
             accessibilityRole="button"
           >
-            <Feather name="key" size={18} color="#000" />
+            <Feather name="key" size={18} color={tone("#000")} />
             <Text style={s.googleText}>Email me a reset link</Text>
           </Pressable>
         )}
         {!!note && <Text style={[s.msgText, s.dim, s.pHint]}>{note}</Text>}
         <Pressable onPress={onSignOut} style={[s.googleBtn, s.pSignOut]} accessibilityRole="button">
-          <Feather name="log-out" size={18} color="#000" />
+          <Feather name="log-out" size={18} color={tone("#000")} />
           <Text style={s.googleText}>Sign out</Text>
         </Pressable>
         {/* Two taps instead of a dialog: Alert has no buttons on web. */}
@@ -1514,6 +1595,7 @@ function Profile({
   }
 
   const settingRows: Row[] = [
+    { icon: "moon", label: "Appearance", value: THEMES.find((t) => t.value === settings.theme)?.short, onPress: () => setPage("appearance") },
     { icon: "globe", label: "Language", value: settings.language, onPress: () => setPage("language") },
     { icon: "map-pin", label: "Region", value: settings.region, onPress: () => setPage("region") },
     { icon: "lock", label: "Password and security", onPress: () => setPage("security") },
@@ -1544,7 +1626,7 @@ function Profile({
             </Text>
           </View>
           <Pressable onPress={() => setPage("edit")} style={s.pEdit} hitSlop={8} accessibilityLabel="Edit profile">
-            <Feather name="edit-2" size={21} color="#000" />
+            <Feather name="edit-2" size={21} color={tone("#000")} />
           </Pressable>
         </View>
 
@@ -1559,7 +1641,7 @@ function Profile({
 
         <View style={s.pSettings}>
           <View style={s.pRow}>
-            <Feather name="bell" size={20} color="#000" />
+            <Feather name="bell" size={20} color={tone("#000")} />
             <Text style={s.pRowLabel}>Repair reminders</Text>
             <Toggle on={settings.reminders} onChange={setReminders} label="Repair reminders" />
           </View>
@@ -1590,7 +1672,7 @@ function SubPage({ title, onBack, children }: { title: string; onBack: () => voi
     <View style={s.flex}>
       <View style={s.header}>
         <Pressable onPress={onBack} style={s.circle} accessibilityLabel="Back">
-          <Feather name="arrow-left" size={20} color="#000" />
+          <Feather name="arrow-left" size={20} color={tone("#000")} />
         </Pressable>
         <Text style={s.title}>{title}</Text>
         <View style={s.headerSpacer} />
@@ -1647,10 +1729,10 @@ function EditProfile({
 function SettingRow({ icon, label, value, onPress }: Row) {
   return (
     <Pressable onPress={onPress} style={s.pRow} accessibilityRole="button">
-      <Feather name={icon} size={20} color="#000" />
+      <Feather name={icon} size={20} color={tone("#000")} />
       <Text style={s.pRowLabel}>{label}</Text>
       {value && <Text style={s.pRowValue}>{value}</Text>}
-      <Feather name="chevron-right" size={18} color="rgba(0,0,0,0.6)" />
+      <Feather name="chevron-right" size={18} color={tone("rgba(0,0,0,0.6)")} />
     </Pressable>
   );
 }
@@ -1664,7 +1746,7 @@ function Toggle({ on, onChange, label }: { on: boolean; onChange: (on: boolean) 
   }, [on, v]);
   return (
     <RNPressable onPress={() => onChange(!on)} hitSlop={8} accessibilityRole="switch" accessibilityState={{ checked: on }} accessibilityLabel={label}>
-      <Animated.View style={[s.toggle, { backgroundColor: v.interpolate({ inputRange: [0, 1], outputRange: ["#CFCFCF", "#2D2D2D"] }) }]}>
+      <Animated.View style={[s.toggle, { backgroundColor: v.interpolate({ inputRange: [0, 1], outputRange: [tone("#CFCFCF"), tone("#2D2D2D")] }) }]}>
         <Animated.View style={[s.knob, { transform: [{ translateX: v.interpolate({ inputRange: [0, 1], outputRange: [0, 20] }) }] }]} />
       </Animated.View>
     </RNPressable>
@@ -1687,8 +1769,9 @@ function StatusDot({ status, big }: { status: CheckStatus; big?: boolean }) {
 
 // History, all gadgets at once by default: a month card (summary tiles + calendar to pick a day) above a timeline
 // of checks grouped by day, newest first. Tapping a check offers Mark as fixed and Remove.
+// Raw light-mode colours, themed where drawn (this table is built once, at load). fg on green stays black.
 const STATUS_BADGE: Record<CheckStatus, { label: string; icon: FeatherName; bg: string; fg: string }> = {
-  fixed: { label: "Fixed", icon: "check", bg: GREEN, fg: "#000" },
+  fixed: { label: "Fixed", icon: "check", bg: GREEN, fg: ON_ACCENT },
   checked: { label: "Checked", icon: "search", bg: "#F3F3F3", fg: "#000" },
   pro: { label: "Needs a pro", icon: "alert-triangle", bg: "#000", fg: GREEN },
 };
@@ -1790,13 +1873,13 @@ function History({
           <View style={s.gEmptyCard}>
             <View style={s.gHero}>
               <View style={[s.gHeroIcon, s.gHeroSide]}>
-                <Feather name="search" size={22} color="#000" />
+                <Feather name="search" size={22} color={tone("#000")} />
               </View>
               <View style={[s.gHeroIcon, s.gHeroMain]}>
                 <Feather name="clock" size={30} color={GREEN} />
               </View>
               <View style={[s.gHeroIcon, s.gHeroSide]}>
-                <Feather name="check" size={22} color="#000" />
+                <Feather name="check" size={22} color={tone("#000")} />
               </View>
             </View>
             <Text style={s.gEmptyTitle}>No checks yet</Text>
@@ -1814,7 +1897,7 @@ function History({
                   const on = only === g.id;
                   return (
                     <Pressable key={g.id ?? "all"} onPress={() => filter(g.id)} style={[s.gChip, s.hxChip, on && s.filterOn]} accessibilityState={{ selected: on }}>
-                      {g.kind ? <Feather name={kindIcon(g.kind)} size={15} color={on ? "#fff" : "#000"} /> : null}
+                      {g.kind ? <Feather name={kindIcon(g.kind)} size={15} color={on ? tone("#fff") : tone("#000")} /> : null}
                       <Text style={[s.gChipText, on && s.tagTextLight]} numberOfLines={1}>
                         {g.name}
                       </Text>
@@ -1830,10 +1913,10 @@ function History({
                   {MONTHS[view.m]} {view.y}
                 </Text>
                 <Pressable onPress={() => move(-1)} style={s.hxNav} hitSlop={6} accessibilityLabel="Previous month">
-                  <Feather name="chevron-left" size={20} color="#000" />
+                  <Feather name="chevron-left" size={20} color={tone("#000")} />
                 </Pressable>
                 <Pressable onPress={() => move(1)} style={s.hxNav} hitSlop={6} accessibilityLabel="Next month">
-                  <Feather name="chevron-right" size={20} color="#000" />
+                  <Feather name="chevron-right" size={20} color={tone("#000")} />
                 </Pressable>
               </View>
 
@@ -1911,8 +1994,8 @@ function History({
                   return (
                     <Pressable key={c.id} onPress={() => toggle(c.id)} style={s.hxEntry} accessibilityRole="button" accessibilityState={{ expanded: isOpen }}>
                       <View style={s.gTop}>
-                        <View style={[s.hxBadge, { backgroundColor: b.bg }]}>
-                          <Feather name={b.icon} size={18} color={b.fg} />
+                        <View style={[s.hxBadge, { backgroundColor: surface(b.bg) }]}>
+                          <Feather name={b.icon} size={18} color={tone(b.fg)} />
                         </View>
                         <View style={s.gText}>
                           <Text style={s.hxTitle} numberOfLines={2}>
@@ -1922,7 +2005,7 @@ function History({
                             {c.detail}
                           </Text>
                           <View style={s.hxMeta}>
-                            {g && <Feather name={kindIcon(g.kind)} size={13} color="rgba(0,0,0,0.45)" />}
+                            {g && <Feather name={kindIcon(g.kind)} size={13} color={tone("rgba(0,0,0,0.45)")} />}
                             <Text style={s.hxMetaText} numberOfLines={1}>
                               {g ? g.name : "Removed gadget"} · {b.label}
                             </Text>
@@ -2031,7 +2114,7 @@ function Setup({ settings, onFinish }: { settings: Settings; onFinish: (answers:
       <View style={s.header}>
         {step > 0 ? (
           <Pressable onPress={() => setStep(step - 1)} style={s.circle} accessibilityLabel="Previous question">
-            <Feather name="arrow-left" size={20} color="#000" />
+            <Feather name="arrow-left" size={20} color={tone("#000")} />
           </Pressable>
         ) : (
           <View style={s.headerSpacer} />
@@ -2060,7 +2143,7 @@ function Setup({ settings, onFinish }: { settings: Settings; onFinish: (answers:
             value={a.name}
             onChangeText={(name) => set({ name })}
             placeholder="Your name"
-            placeholderTextColor="rgba(0,0,0,0.2)"
+            placeholderTextColor={tone("rgba(0,0,0,0.2)")}
             autoComplete="name"
             textContentType="name"
             autoFocus
@@ -2083,7 +2166,7 @@ function Setup({ settings, onFinish }: { settings: Settings; onFinish: (answers:
                   accessibilityRole="checkbox"
                   accessibilityState={{ checked: on }}
                 >
-                  <Feather name={d.icon} size={24} color={on ? "#fff" : "#000"} />
+                  <Feather name={d.icon} size={24} color={on ? tone("#fff") : tone("#000")} />
                   <Text style={[s.setupTileText, on && s.tagTextLight]}>{d.label}</Text>
                 </Pressable>
               );
@@ -2119,7 +2202,7 @@ function Setup({ settings, onFinish }: { settings: Settings; onFinish: (answers:
               return (
                 <Pressable key={o} onPress={() => set({ [key]: o })} style={s.pRow} accessibilityRole="radio" accessibilityState={{ checked: on }}>
                   <Text style={s.pRowLabel}>{o}</Text>
-                  {on && <Feather name="check" size={20} color="#000" />}
+                  {on && <Feather name="check" size={20} color={tone("#000")} />}
                 </Pressable>
               );
             })}
@@ -2212,7 +2295,7 @@ function Auth({ initial, onBack, onDone }: { initial: AuthMode; onBack: () => vo
     <KeyboardAvoidingView style={s.flex} behavior="padding">
       <View style={s.header}>
         <Pressable onPress={onBack} style={s.circle} accessibilityLabel="Back">
-          <Feather name="arrow-left" size={20} color="#000" />
+          <Feather name="arrow-left" size={20} color={tone("#000")} />
         </Pressable>
       </View>
       <ScrollView contentContainerStyle={s.auth} keyboardShouldPersistTaps="handled">
@@ -2289,7 +2372,7 @@ function Field({ label, secureTextEntry, ...props }: { label: string } & Compone
   const [shown, setShown] = useState(false);
   const input = (
     <TextInput
-      placeholderTextColor="rgba(0,0,0,0.2)"
+      placeholderTextColor={tone("rgba(0,0,0,0.2)")}
       accessibilityLabel={label}
       secureTextEntry={secureTextEntry && !shown}
       style={[s.authInput, secureTextEntry && s.authInputSecret]}
@@ -2309,7 +2392,7 @@ function Field({ label, secureTextEntry, ...props }: { label: string } & Compone
             accessibilityRole="button"
             accessibilityLabel={shown ? "Hide password" : "Show password"}
           >
-            <Feather name={shown ? "eye-off" : "eye"} size={18} color="rgba(0,0,0,0.45)" />
+            <Feather name={shown ? "eye-off" : "eye"} size={18} color={tone("rgba(0,0,0,0.45)")} />
           </Pressable>
         </View>
       ) : (
@@ -2500,15 +2583,15 @@ function TileMap({ you, center, shops, route, onDrag }: { you?: Point; center: P
       {tiles.map(({ x, y }) => (
         <Image
           key={`${zoom}/${x}/${y}`}
-          source={{ uri: `https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/${zoom}/${y}/${x}` }}
+          source={{ uri: `https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_${DARK ? "Dark" : "Light"}_Gray_Base/MapServer/tile/${zoom}/${y}/${x}` }}
           style={[s.tile, { left: x * TILE - left, top: y * TILE - top }]}
         />
       ))}
       {w > 0 && line && (
         // A white casing under the black line keeps it readable over streets.
         <Svg width={w} height={h} style={s.routeLine} pointerEvents="none">
-          <Polyline points={line} fill="none" stroke="#fff" strokeWidth={8} strokeLinejoin="round" strokeLinecap="round" />
-          <Polyline points={line} fill="none" stroke="#000" strokeWidth={4} strokeLinejoin="round" strokeLinecap="round" />
+          <Polyline points={line} fill="none" stroke={tone("#fff")} strokeWidth={8} strokeLinejoin="round" strokeLinecap="round" />
+          <Polyline points={line} fill="none" stroke={tone("#000")} strokeWidth={4} strokeLinejoin="round" strokeLinecap="round" />
         </Svg>
       )}
       {w > 0 && you && <View style={[s.youDot, at(you, 14)]} />}
@@ -2520,14 +2603,14 @@ function TileMap({ you, center, shops, route, onDrag }: { you?: Point; center: P
         ))}
       <View style={s.mapControls}>
         <Pressable onPress={() => zoomBy(1)} disabled={zoom >= MAX_ZOOM} style={s.mapBtn} accessibilityLabel="Zoom in">
-          <Feather name="plus" size={16} color="#000" />
+          <Feather name="plus" size={16} color={tone("#000")} />
         </Pressable>
         <Pressable onPress={() => zoomBy(-1)} disabled={zoom <= 3} style={s.mapBtn} accessibilityLabel="Zoom out">
-          <Feather name="minus" size={16} color="#000" />
+          <Feather name="minus" size={16} color={tone("#000")} />
         </Pressable>
         {view && (
           <Pressable onPress={() => setView(null)} style={s.mapBtn} accessibilityLabel="Re-center map">
-            <Feather name="crosshair" size={16} color="#000" />
+            <Feather name="crosshair" size={16} color={tone("#000")} />
           </Pressable>
         )}
       </View>
@@ -2630,17 +2713,17 @@ function Shops({ t, region, onBack }: { t: Extract<Turn, { role: "assistant" }>;
     <View style={s.flex}>
       <View style={s.header}>
         <Pressable onPress={onBack} style={s.circle} accessibilityLabel="Back to diagnosis">
-          <Feather name="arrow-left" size={20} color="#000" />
+          <Feather name="arrow-left" size={20} color={tone("#000")} />
         </Pressable>
         <Text style={s.title}>Repair Shops</Text>
         <View style={s.circle} accessibilityLabel={t.device}>
-          <Feather name={icon} size={20} color="#000" />
+          <Feather name={icon} size={20} color={tone("#000")} />
         </View>
       </View>
 
       <ScrollView ref={scroll} style={s.flex} contentContainerStyle={s.result} keyboardShouldPersistTaps="handled" scrollEnabled={!dragging}>
         <View style={s.caseCard}>
-          <Feather name={icon} size={24} color="#fff" />
+          <Feather name={icon} size={24} color={tone("#fff")} />
           <Text style={s.caseText} numberOfLines={2}>
             {t.device && <Text style={s.caseDevice}>{t.device} · </Text>}
             {d.summary}
@@ -2651,13 +2734,13 @@ function Shops({ t, region, onBack }: { t: Extract<Turn, { role: "assistant" }>;
         </View>
 
         <View style={s.nearBox}>
-          <Feather name="map-pin" size={17} color="#000" />
+          <Feather name="map-pin" size={17} color={tone("#000")} />
           <TextInput
             value={nearText}
             onChangeText={setNearText}
             onSubmitEditing={() => setNear(nearText.trim())}
             placeholder={area.city ? `Near ${area.city}` : "Near you"}
-            placeholderTextColor="rgba(0,0,0,0.2)"
+            placeholderTextColor={tone("rgba(0,0,0,0.2)")}
             returnKeyType="search"
             accessibilityLabel="Search near a place"
             style={s.nearInput}
@@ -2716,7 +2799,7 @@ function Shops({ t, region, onBack }: { t: Extract<Turn, { role: "assistant" }>;
                 <>
                   {/* OpenStreetMap has no ratings, so this row is just the hours. */}
                   <View style={s.shopRow}>
-                    <Feather name="clock" size={15} color="rgba(0,0,0,0.5)" />
+                    <Feather name="clock" size={15} color={tone("rgba(0,0,0,0.5)")} />
                     <Text style={s.shopHours}>{hours(shop)}</Text>
                   </View>
                   {route?.shopId === shop.id ? (
@@ -2736,14 +2819,14 @@ function Shops({ t, region, onBack }: { t: Extract<Turn, { role: "assistant" }>;
                           </Pressable>
                         ))}
                         <Pressable onPress={() => setRoute(null)} style={[s.circle, s.callBtn, s.modeChip]} accessibilityLabel="Close directions">
-                          <Feather name="x" size={16} color="#000" />
+                          <Feather name="x" size={16} color={tone("#000")} />
                         </Pressable>
                       </View>
                       <View style={s.routeSteps}>
                         {route.steps.map((st, k) => (
                           <View key={k} style={s.shopRow}>
                             <View style={s.turnIcon}>
-                              <Feather name={st.icon} size={15} color="#000" />
+                              <Feather name={st.icon} size={15} color={tone("#000")} />
                             </View>
                             <Text style={s.shopHours}>{st.text}</Text>
                             {st.m > 0 && <Text style={s.shopDist}>{meters(st.m)}</Text>}
@@ -2762,7 +2845,7 @@ function Shops({ t, region, onBack }: { t: Extract<Turn, { role: "assistant" }>;
                       style={[s.circle, s.bigCircle, s.callBtn, !shop.phone && s.disabled]}
                       accessibilityLabel={shop.phone ? `Call ${shop.name}` : "No phone number listed"}
                     >
-                      <Feather name="phone" size={20} color="#000" />
+                      <Feather name="phone" size={20} color={tone("#000")} />
                     </Pressable>
                   </View>
                   )}
@@ -2799,7 +2882,7 @@ function Bookmark({ saved, big, onPress }: { saved: boolean; big?: boolean; onPr
       accessibilityLabel={saved ? "Remove bookmark" : "Bookmark diagnosis"}
       accessibilityState={{ selected: saved }}
     >
-      <Feather name="bookmark" size={big ? 22 : 20} color={saved ? "#fff" : "#000"} />
+      <Feather name="bookmark" size={big ? 22 : 20} color={saved ? tone("#fff") : tone("#000")} />
     </Pressable>
   );
 }
@@ -2827,12 +2910,12 @@ function FileCheck({
       {gadgets.map((g) => (
         <Pressable key={g.id} onPress={() => onPick(g)} style={s.fileRow} accessibilityRole="button">
           <View style={s.fileIcon}>
-            <Feather name={kindIcon(g.kind)} size={18} color="#000" />
+            <Feather name={kindIcon(g.kind)} size={18} color={tone("#000")} />
           </View>
           <Text style={s.fileRowText} numberOfLines={1}>
             {g.name}
           </Text>
-          <Feather name="chevron-right" size={18} color="rgba(0,0,0,0.4)" />
+          <Feather name="chevron-right" size={18} color={tone("rgba(0,0,0,0.4)")} />
         </Pressable>
       ))}
       <Pressable onPress={onAdd} style={s.fileRow} accessibilityRole="button">
@@ -2883,13 +2966,13 @@ function Result({ t, onBack, top }: { t: Extract<Turn, { role: "assistant" }>; o
     <>
       <View style={s.header}>
         <Pressable onPress={onBack} style={s.circle} accessibilityLabel="Back to chat">
-          <Feather name="arrow-left" size={20} color="#000" />
+          <Feather name="arrow-left" size={20} color={tone("#000")} />
         </Pressable>
         <Text style={s.title}>Diagnosis</Text>
         {pro ? (
           // The professional page's design shows the device type here instead of Share.
           <View style={s.circle} accessibilityLabel={t.device}>
-            <Feather name={DEVICE_ICONS[t.deviceType ?? ""] ?? "cpu"} size={20} color="#000" />
+            <Feather name={DEVICE_ICONS[t.deviceType ?? ""] ?? "cpu"} size={20} color={tone("#000")} />
           </View>
         ) : (
           <Pressable
@@ -2897,7 +2980,7 @@ function Result({ t, onBack, top }: { t: Extract<Turn, { role: "assistant" }>; o
             style={s.circle}
             accessibilityLabel="Share diagnosis"
           >
-            <Feather name="share" size={20} color="#000" />
+            <Feather name="share" size={20} color={tone("#000")} />
           </Pressable>
         )}
       </View>
@@ -2934,7 +3017,7 @@ function Result({ t, onBack, top }: { t: Extract<Turn, { role: "assistant" }>; o
               <Text style={s.monoLabel}>DO THIS NOW</Text>
               {d.now.map((n, i) => (
                 <View key={i} style={s.nowRow}>
-                  <Feather name={n.icon as FeatherName} size={17} color="#000" style={s.nowIcon} />
+                  <Feather name={n.icon as FeatherName} size={17} color={tone("#000")} style={s.nowIcon} />
                   <Text style={s.nowText}>{n.text}</Text>
                 </View>
               ))}
@@ -2949,8 +3032,8 @@ function Result({ t, onBack, top }: { t: Extract<Turn, { role: "assistant" }>; o
                 <Text style={[s.tagText, s.tagTextLight]}>{cat.label}</Text>
               </View>
               <View style={[s.tag, s[diff.style]]}>
-                <Feather name={diff.icon} size={16} color="#000" />
-                <Text style={s.tagText}>{d.difficulty}</Text>
+                <Feather name={diff.icon} size={16} color={diff.style === "tagGreen" ? ON_ACCENT : tone("#000")} />
+                <Text style={[s.tagText, diff.style === "tagGreen" && s.onAccent]}>{d.difficulty}</Text>
               </View>
             </View>
 
@@ -2990,7 +3073,7 @@ function Guide({ d, step, onStep, onClose }: { d: Diagnosis; step: number; onSte
     <View style={s.flex}>
       <View style={s.header}>
         <Pressable onPress={() => onClose(false)} style={s.circle} accessibilityLabel="Back to diagnosis">
-          <Feather name="arrow-left" size={20} color="#000" />
+          <Feather name="arrow-left" size={20} color={tone("#000")} />
         </Pressable>
         <Text style={s.title}>Repair Guide</Text>
         <View style={s.stepCount} accessibilityLabel={`Step ${step + 1} of ${d.steps.length}`}>
@@ -3011,15 +3094,15 @@ function Guide({ d, step, onStep, onClose }: { d: Diagnosis; step: number; onSte
       <ScrollView key={step} style={s.flex} contentContainerStyle={s.result}>
         <View style={[s.tags, s.guideTags]}>
           <View style={[s.tag, s[diff.style]]}>
-            <Feather name={diff.icon} size={16} color="#000" />
-            <Text style={s.tagText}>{d.difficulty}</Text>
+            <Feather name={diff.icon} size={16} color={diff.style === "tagGreen" ? ON_ACCENT : tone("#000")} />
+            <Text style={[s.tagText, diff.style === "tagGreen" && s.onAccent]}>{d.difficulty}</Text>
           </View>
           <View style={[s.tag, s.tagWhite]}>
-            <Feather name="clock" size={16} color="#000" />
+            <Feather name="clock" size={16} color={tone("#000")} />
             <Text style={s.tagText}>{minutesLabel(d.minutes)}</Text>
           </View>
           <View style={[s.tag, s.tagWhite]}>
-            <Feather name={cat.icon} size={16} color="#000" />
+            <Feather name={cat.icon} size={16} color={tone("#000")} />
             <Text style={s.tagText}>{cat.label}</Text>
           </View>
         </View>
@@ -3058,7 +3141,7 @@ function Guide({ d, step, onStep, onClose }: { d: Diagnosis; step: number; onSte
         <Pressable onPress={() => (last ? onClose(true) : onStep(step + 1))} style={s.nextBtn} accessibilityRole="button">
           <Text style={s.nextText}>{last ? "Finish" : "Next step"}</Text>
           <View style={s.nextIcon}>
-            <Feather name={last ? "check" : "arrow-right"} size={16} color="#000" />
+            <Feather name={last ? "check" : "arrow-right"} size={16} color={ON_ACCENT} />
           </View>
         </Pressable>
       </View>
@@ -3104,7 +3187,7 @@ function Diagnosing({ d, onCancel }: { d: Diag; onCancel: () => void }) {
     <ScrollView style={s.flex} contentContainerStyle={s.diagPage}>
       <View style={s.header}>
         <Pressable onPress={onCancel} style={s.circle} accessibilityLabel="Back">
-          <Feather name="arrow-left" size={20} color="#000" />
+          <Feather name="arrow-left" size={20} color={tone("#000")} />
         </Pressable>
         <Text style={s.title}>Diagnosing</Text>
         <View style={s.headerSpacer} />
@@ -3113,7 +3196,7 @@ function Diagnosing({ d, onCancel }: { d: Diag; onCancel: () => void }) {
       <View style={[s.ringBox, { width: size, height: size }]}>
         {/* Rotated -90° so the arc starts at 12 o'clock and fills clockwise. */}
         <Svg width={size} height={size} style={s.ringSvg}>
-          <Circle cx={size / 2} cy={size / 2} r={r} stroke="#E3E3E3" strokeWidth={3} fill="none" />
+          <Circle cx={size / 2} cy={size / 2} r={r} stroke={tone("#E3E3E3")} strokeWidth={3} fill="none" />
           <AnimatedCircle
             cx={size / 2}
             cy={size / 2}
@@ -3297,7 +3380,7 @@ function StepIcon({ state }: { state: "done" | "active" | "next" }) {
 function Card(p: { icon: "camera" | "message-square"; title: string; subtitle: string; onPress: () => void }) {
   return (
     <Pressable onPress={p.onPress} style={s.card}>
-      <Feather name={p.icon} size={22} color="#000" style={s.cardIcon} />
+      <Feather name={p.icon} size={22} color={tone("#000")} style={s.cardIcon} />
       <Text style={s.cardTitle}>{p.title}</Text>
       {/* One line: shrinks to fit on narrow phones (native) rather than wrapping. */}
       <Text style={s.cardSub} numberOfLines={1} adjustsFontSizeToFit>
@@ -3307,90 +3390,92 @@ function Card(p: { icon: "camera" | "message-square"; title: string; subtitle: s
   );
 }
 
-const s = StyleSheet.create({
+// The stylesheet is built once per theme (tone() and surface() read DARK while it's built); `s` is the current one.
+function makeStyles() {
+  return StyleSheet.create({
   // overflow: the Home dot circle is wider than the screen; unclipped, browsers scroll the page sideways.
-  screen: { flex: 1, backgroundColor: "#F3F3F3", overflow: "hidden" },
+  screen: { flex: 1, backgroundColor: PAGE_BG(), overflow: "hidden" },
   flex: { flex: 1 },
 
   header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 20 },
-  circle: { width: 45, height: 45, borderRadius: 100, backgroundColor: "#fff", alignItems: "center", justifyContent: "center" },
-  avatar: { borderWidth: 1, borderColor: "#D5E2D5", backgroundColor: "#EAF7E5" },
-  avatarText: { fontFamily: "Poppins_600SemiBold", fontSize: 17, color: "#000" },
-  title: { fontFamily: "Poppins_600SemiBold", fontSize: 15, lineHeight: 22, color: "#000" },
-  time: { fontFamily: "Poppins_400Regular", fontSize: 11, lineHeight: 16, textAlign: "center", color: "#000", marginTop: 4 },
+  circle: { width: 45, height: 45, borderRadius: 100, backgroundColor: surface("#fff"), alignItems: "center", justifyContent: "center" },
+  avatar: { borderWidth: 1, borderColor: tone("#D5E2D5"), backgroundColor: surface("#EAF7E5") },
+  avatarText: { fontFamily: "Poppins_600SemiBold", fontSize: 17, color: tone("#000") },
+  title: { fontFamily: "Poppins_600SemiBold", fontSize: 15, lineHeight: 22, color: tone("#000") },
+  time: { fontFamily: "Poppins_400Regular", fontSize: 11, lineHeight: 16, textAlign: "center", color: tone("#000"), marginTop: 4 },
 
   home: { flex: 1, justifyContent: "center", paddingHorizontal: 20 },
-  start: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, zIndex: 10, backgroundColor: "#fff", alignItems: "center", justifyContent: "center" },
+  start: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, zIndex: 10, backgroundColor: surface("#fff"), alignItems: "center", justifyContent: "center" },
   startLogo: { transform: [{ scale: 1.8 }] },
   // Welcome page, measured from the mockup. The logo area and the gap above the button split the spare
   // height about 3.25 : 1, as in the mockup, so it scales to other screen heights.
   welcome: { flex: 1, paddingHorizontal: 20, paddingBottom: 20 },
   welcomeTop: { flex: 3.25, alignItems: "center", justifyContent: "center" },
-  welcomeTitle: { fontFamily: "Poppins_500Medium", fontSize: 32, lineHeight: 42, textAlign: "center", color: "#000" },
-  welcomeSub: { fontFamily: "Poppins_500Medium", fontSize: 20, lineHeight: 28, textAlign: "center", color: "#000" },
-  welcomeBody: { fontFamily: "Poppins_400Regular", fontSize: 15, lineHeight: 23, textAlign: "center", color: "#000", marginTop: 14, paddingHorizontal: 6 },
+  welcomeTitle: { fontFamily: "Poppins_500Medium", fontSize: 32, lineHeight: 42, textAlign: "center", color: tone("#000") },
+  welcomeSub: { fontFamily: "Poppins_500Medium", fontSize: 20, lineHeight: 28, textAlign: "center", color: tone("#000") },
+  welcomeBody: { fontFamily: "Poppins_400Regular", fontSize: 15, lineHeight: 23, textAlign: "center", color: tone("#000"), marginTop: 14, paddingHorizontal: 6 },
   welcomeGap: { flex: 1 },
-  welcomeBtn: { height: 59, borderRadius: 100, backgroundColor: "#000", alignItems: "center", justifyContent: "center" },
-  welcomeBtnText: { fontFamily: "Poppins_600SemiBold", fontSize: 15, color: "#fff" },
+  welcomeBtn: { height: 59, borderRadius: 100, backgroundColor: surface("#000"), alignItems: "center", justifyContent: "center" },
+  welcomeBtnText: { fontFamily: "Poppins_600SemiBold", fontSize: 15, color: tone("#fff") },
   // My gadgets and the tab bar, measured from the mockup.
   gHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 20, paddingTop: 15 },
-  gTitle: { fontFamily: "Poppins_600SemiBold", fontSize: 26, lineHeight: 34, color: "#000" },
-  gCount: { fontFamily: "Poppins_400Regular", fontSize: 14, lineHeight: 20, color: "rgba(0,0,0,0.5)" },
-  gAdd: { backgroundColor: "#000" },
+  gTitle: { fontFamily: "Poppins_600SemiBold", fontSize: 26, lineHeight: 34, color: tone("#000") },
+  gCount: { fontFamily: "Poppins_400Regular", fontSize: 14, lineHeight: 20, color: tone("rgba(0,0,0,0.5)") },
+  gAdd: { backgroundColor: surface("#000") },
   gEmpty: { textAlign: "center", marginTop: 20 }, // History's empty message
-  gEmptyCard: { alignItems: "center", paddingTop: 36, paddingBottom: 28, paddingHorizontal: 24, borderRadius: 28, backgroundColor: "#fff" },
+  gEmptyCard: { alignItems: "center", paddingTop: 36, paddingBottom: 28, paddingHorizontal: 24, borderRadius: 28, backgroundColor: surface("#fff") },
   gHero: { flexDirection: "row", alignItems: "center", marginBottom: 22 },
   gHeroIcon: { alignItems: "center", justifyContent: "center", borderRadius: 100 },
-  gHeroMain: { width: 76, height: 76, backgroundColor: "#000", marginHorizontal: -8, zIndex: 1, borderWidth: 5, borderColor: "#fff" },
-  gHeroSide: { width: 56, height: 56, backgroundColor: "#F3F3F3" },
-  gEmptyTitle: { fontFamily: "Poppins_600SemiBold", fontSize: 20, lineHeight: 28, color: "#000" },
-  gEmptyBody: { fontFamily: "Poppins_400Regular", fontSize: 15, lineHeight: 22, textAlign: "center", color: "rgba(0,0,0,0.55)", marginTop: 6, maxWidth: 290 },
+  gHeroMain: { width: 76, height: 76, backgroundColor: surface("#000"), marginHorizontal: -8, zIndex: 1, borderWidth: 5, borderColor: surface("#fff") },
+  gHeroSide: { width: 56, height: 56, backgroundColor: surface("#F3F3F3") },
+  gEmptyTitle: { fontFamily: "Poppins_600SemiBold", fontSize: 20, lineHeight: 28, color: tone("#000") },
+  gEmptyBody: { fontFamily: "Poppins_400Regular", fontSize: 15, lineHeight: 22, textAlign: "center", color: tone("rgba(0,0,0,0.55)"), marginTop: 6, maxWidth: 290 },
   gEmptyBtn: { flexDirection: "row", gap: 8, alignSelf: "stretch", marginTop: 24 },
-  gSearch: { flexDirection: "row", alignItems: "center", gap: 12, height: 52, paddingHorizontal: 18, borderRadius: 100, backgroundColor: "#fff" },
-  gSearchInput: { flex: 1, height: "100%", fontFamily: "Poppins_400Regular", fontSize: 15, color: "#000" },
+  gSearch: { flexDirection: "row", alignItems: "center", gap: 12, height: 52, paddingHorizontal: 18, borderRadius: 100, backgroundColor: surface("#fff") },
+  gSearchInput: { flex: 1, height: "100%", fontFamily: "Poppins_400Regular", fontSize: 15, color: tone("#000") },
   gFilters: { marginTop: 12, marginHorizontal: -20 },
   gFilterRow: { gap: 8, paddingHorizontal: 20 },
-  gChip: { flexDirection: "row", alignItems: "center", gap: 8, height: 40, paddingLeft: 16, paddingRight: 8, borderRadius: 100, backgroundColor: "#fff" },
-  gChipText: { fontFamily: "Poppins_500Medium", fontSize: 14, color: "#000" },
-  gChipCount: { minWidth: 24, height: 24, paddingHorizontal: 6, borderRadius: 12, backgroundColor: "#F3F3F3", alignItems: "center", justifyContent: "center" },
-  gChipCountOn: { backgroundColor: "rgba(255,255,255,0.18)" },
-  gChipCountText: { fontFamily: "Poppins_500Medium", fontSize: 12, color: "rgba(0,0,0,0.55)" },
-  gChipCountTextOn: { color: "#fff" },
-  gCard: { marginTop: 12, padding: 18, borderRadius: 24, backgroundColor: "#fff" },
+  gChip: { flexDirection: "row", alignItems: "center", gap: 8, height: 40, paddingLeft: 16, paddingRight: 8, borderRadius: 100, backgroundColor: surface("#fff") },
+  gChipText: { fontFamily: "Poppins_500Medium", fontSize: 14, color: tone("#000") },
+  gChipCount: { minWidth: 24, height: 24, paddingHorizontal: 6, borderRadius: 12, backgroundColor: surface("#F3F3F3"), alignItems: "center", justifyContent: "center" },
+  gChipCountOn: { backgroundColor: surface("rgba(255,255,255,0.18)") },
+  gChipCountText: { fontFamily: "Poppins_500Medium", fontSize: 12, color: tone("rgba(0,0,0,0.55)") },
+  gChipCountTextOn: { color: tone("#fff") },
+  gCard: { marginTop: 12, padding: 18, borderRadius: 24, backgroundColor: surface("#fff") },
   gTop: { flexDirection: "row", alignItems: "center" },
-  gIcon: { width: 52, height: 52, borderRadius: 16, backgroundColor: "#F3F3F3", alignItems: "center", justifyContent: "center" },
+  gIcon: { width: 52, height: 52, borderRadius: 16, backgroundColor: surface("#F3F3F3"), alignItems: "center", justifyContent: "center" },
   gText: { flex: 1, marginLeft: 14 },
-  gName: { fontFamily: "Poppins_600SemiBold", fontSize: 16, lineHeight: 23, color: "#000" },
-  gKind: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 19, color: "rgba(0,0,0,0.5)" },
+  gName: { fontFamily: "Poppins_600SemiBold", fontSize: 16, lineHeight: 23, color: tone("#000") },
+  gKind: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 19, color: tone("rgba(0,0,0,0.5)") },
   gStatus: { flexDirection: "row", alignItems: "center", gap: 5, height: 28, paddingHorizontal: 12, borderRadius: 100 },
-  gStatusText: { fontFamily: "Poppins_500Medium", fontSize: 13, color: "#000" },
-  gDivider: { height: 1, backgroundColor: "rgba(0,0,0,0.06)", marginVertical: 14 },
+  gStatusText: { fontFamily: "Poppins_500Medium", fontSize: 13, color: tone("#000") },
+  gDivider: { height: 1, backgroundColor: surface("rgba(0,0,0,0.06)"), marginVertical: 14 },
   gFoot: { flexDirection: "row", alignItems: "center", gap: 12 },
-  gIssue: { flex: 1, fontFamily: "Poppins_400Regular", fontSize: 14, lineHeight: 20, color: "rgba(0,0,0,0.6)" },
-  gMeta: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 19, color: "rgba(0,0,0,0.4)" },
-  gRemove: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, height: 48, marginTop: 14, borderRadius: 100, backgroundColor: "#FDECEC" },
+  gIssue: { flex: 1, fontFamily: "Poppins_400Regular", fontSize: 14, lineHeight: 20, color: tone("rgba(0,0,0,0.6)") },
+  gMeta: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 19, color: tone("rgba(0,0,0,0.4)") },
+  gRemove: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, height: 48, marginTop: 14, borderRadius: 100, backgroundColor: surface("#FDECEC") },
   gRemoveText: { fontFamily: "Poppins_500Medium", fontSize: 14, color: "#dc2626" },
   gCheckBtn: { flexDirection: "row", gap: 8, height: 52, marginTop: 14 },
-  forTag: { flexDirection: "row", alignItems: "center", gap: 8, alignSelf: "center", maxWidth: "100%", height: 34, paddingHorizontal: 14, marginBottom: 10, borderRadius: 100, backgroundColor: "#fff" },
-  forTagText: { flexShrink: 1, fontFamily: "Poppins_500Medium", fontSize: 13, color: "#000" },
-  fileCard: { padding: 18, marginBottom: 14, borderRadius: 24, backgroundColor: "#fff", borderWidth: 1, borderColor: "rgba(0,0,0,0.06)" },
-  fileTitle: { fontFamily: "Poppins_600SemiBold", fontSize: 17, lineHeight: 24, color: "#000" },
-  fileSub: { fontFamily: "Poppins_400Regular", fontSize: 14, lineHeight: 20, color: "rgba(0,0,0,0.55)", marginTop: 2, marginBottom: 8 },
+  forTag: { flexDirection: "row", alignItems: "center", gap: 8, alignSelf: "center", maxWidth: "100%", height: 34, paddingHorizontal: 14, marginBottom: 10, borderRadius: 100, backgroundColor: surface("#fff") },
+  forTagText: { flexShrink: 1, fontFamily: "Poppins_500Medium", fontSize: 13, color: tone("#000") },
+  fileCard: { padding: 18, marginBottom: 14, borderRadius: 24, backgroundColor: surface("#fff"), borderWidth: 1, borderColor: tone("rgba(0,0,0,0.06)") },
+  fileTitle: { fontFamily: "Poppins_600SemiBold", fontSize: 17, lineHeight: 24, color: tone("#000") },
+  fileSub: { fontFamily: "Poppins_400Regular", fontSize: 14, lineHeight: 20, color: tone("rgba(0,0,0,0.55)"), marginTop: 2, marginBottom: 8 },
   fileRow: { flexDirection: "row", alignItems: "center", gap: 12, height: 52 },
-  fileIcon: { width: 36, height: 36, borderRadius: 12, backgroundColor: "#F3F3F3", alignItems: "center", justifyContent: "center" },
-  fileIconAdd: { backgroundColor: "#000" },
-  fileRowText: { flex: 1, fontFamily: "Poppins_500Medium", fontSize: 15, color: "#000" },
+  fileIcon: { width: 36, height: 36, borderRadius: 12, backgroundColor: surface("#F3F3F3"), alignItems: "center", justifyContent: "center" },
+  fileIconAdd: { backgroundColor: surface("#000") },
+  fileRowText: { flex: 1, fontFamily: "Poppins_500Medium", fontSize: 15, color: tone("#000") },
   fileSkip: { alignSelf: "center", marginTop: 6 },
-  fileSkipText: { fontFamily: "Poppins_500Medium", fontSize: 14, color: "rgba(0,0,0,0.5)" },
+  fileSkipText: { fontFamily: "Poppins_500Medium", fontSize: 14, color: tone("rgba(0,0,0,0.5)") },
   fileBtn: { flex: 1, flexDirection: "row", gap: 8, height: 50 },
   gNoMatch: { textAlign: "center", marginTop: 24 },
-  gAddCard: { padding: 20, marginBottom: 12, borderRadius: 28, backgroundColor: "#fff" },
-  gAddTitle: { fontFamily: "Poppins_600SemiBold", fontSize: 18, lineHeight: 26, color: "#000", marginBottom: 14 },
-  gAddInput: { backgroundColor: "#F3F3F3", borderColor: "transparent" },
-  gAddLabel: { fontFamily: "Poppins_500Medium", fontSize: 14, color: "rgba(0,0,0,0.55)", marginTop: 18, marginBottom: 10 },
+  gAddCard: { padding: 20, marginBottom: 12, borderRadius: 28, backgroundColor: surface("#fff") },
+  gAddTitle: { fontFamily: "Poppins_600SemiBold", fontSize: 18, lineHeight: 26, color: tone("#000"), marginBottom: 14 },
+  gAddInput: { backgroundColor: surface("#F3F3F3"), borderColor: "transparent" },
+  gAddLabel: { fontFamily: "Poppins_500Medium", fontSize: 14, color: tone("rgba(0,0,0,0.55)"), marginTop: 18, marginBottom: 10 },
   gKinds: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  gKindTile: { width: "23%", flexGrow: 1, height: 72, borderRadius: 18, backgroundColor: "#F3F3F3", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 4 },
-  gKindText: { fontFamily: "Poppins_500Medium", fontSize: 11, color: "#000" },
+  gKindTile: { width: "23%", flexGrow: 1, height: 72, borderRadius: 18, backgroundColor: surface("#F3F3F3"), alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 4 },
+  gKindText: { fontFamily: "Poppins_500Medium", fontSize: 11, color: tone("#000") },
   gAddActions: { flexDirection: "row", gap: 10, marginTop: 18 },
   gAddBtn: { flex: 1, height: 52 },
   gList: { paddingHorizontal: 20, paddingTop: 15, paddingBottom: 110 }, // room to scroll clear of the floating tab bar
@@ -3399,184 +3484,194 @@ const s = StyleSheet.create({
   tabHome: { width: 64, height: 64, alignItems: "center", justifyContent: "center" },
   tabPill: { flexDirection: "row", height: 64, padding: 6 },
   // The selected tab's lens: brighter glass with its own rim.
-  tabMorph: { position: "absolute", top: 6, bottom: 6, borderRadius: 100, backgroundColor: "rgba(0,0,0,0.07)" },
+  tabMorph: { position: "absolute", top: 6, bottom: 6, borderRadius: 100, backgroundColor: surface("rgba(0,0,0,0.07)") },
   tabItem: { flex: 1, alignItems: "center", justifyContent: "center", gap: 2 },
   tabIconBox: { width: 24, height: 24, alignItems: "center", justifyContent: "center" },
   solidPhone: { width: 14, height: 21, borderRadius: 4 }, // a phone silhouette, matched to the solid clock and person
-  tabLabel: { fontFamily: "Poppins_500Medium", fontSize: 10, lineHeight: 13, color: "rgba(0,0,0,0.7)" },
-  tabLabelOn: { fontFamily: "Poppins_600SemiBold", color: "#000" },
-  glassRim: { borderRadius: 100, padding: 1 },
-  glass: { overflow: "hidden", borderRadius: 100, backgroundColor: "rgba(255,255,255,0.12)" },
+  tabLabel: { fontFamily: "Poppins_500Medium", fontSize: 10, lineHeight: 13, color: tone("rgba(0,0,0,0.7)") },
+  tabLabelOn: { fontFamily: "Poppins_600SemiBold", color: tone("#000") },
+  glass: { overflow: "hidden", borderRadius: 100, backgroundColor: DARK ? "rgba(36,36,40,0.45)" : "rgba(255,255,255,0.12)" },
+  glassEdges: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    borderRadius: 100,
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: DARK ? "rgba(255,255,255,0.22)" : "rgba(255,255,255,0.95)",
+  },
   glassNative: { borderRadius: 100, overflow: "hidden" },
   glassShadow: { borderRadius: 100, shadowColor: "#000", shadowOpacity: 0.1, shadowRadius: 24, shadowOffset: { width: 0, height: 10 } },
   // Profile, measured from the mockup.
   pPage: { paddingTop: 0 },
   pTitle: { textAlign: "center", marginTop: 26, marginBottom: 22 },
-  pCard: { flexDirection: "row", alignItems: "center", padding: 20, borderRadius: 25, backgroundColor: "#fff" },
-  pAvatar: { width: 68, height: 68, borderRadius: 34, backgroundColor: "#D9D9D9", marginRight: 2 },
-  pName: { fontFamily: "Poppins_600SemiBold", fontSize: 19, lineHeight: 27, color: "#000" },
+  pCard: { flexDirection: "row", alignItems: "center", padding: 20, borderRadius: 25, backgroundColor: surface("#fff") },
+  pAvatar: { width: 68, height: 68, borderRadius: 34, backgroundColor: surface("#D9D9D9"), marginRight: 2 },
+  pName: { fontFamily: "Poppins_600SemiBold", fontSize: 19, lineHeight: 27, color: tone("#000") },
   pEdit: { padding: 7 },
-  pEmail: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 19, color: "rgba(0,0,0,0.6)" },
+  pEmail: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 19, color: tone("rgba(0,0,0,0.6)") },
   pStats: { flexDirection: "row", gap: 10, marginTop: 10 },
-  pStat: { flex: 1, alignItems: "center", paddingTop: 16, paddingBottom: 18, borderRadius: 25, backgroundColor: "#fff" },
-  pStatNum: { fontFamily: "Poppins_500Medium", fontSize: 34, lineHeight: 44, color: "#000" },
-  pStatLabel: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 18, textAlign: "center", color: "#000", marginTop: 2 },
-  pSettings: { marginTop: 12, paddingHorizontal: 20, paddingVertical: 10, borderRadius: 25, backgroundColor: "#fff" },
+  pStat: { flex: 1, alignItems: "center", paddingTop: 16, paddingBottom: 18, borderRadius: 25, backgroundColor: surface("#fff") },
+  pStatNum: { fontFamily: "Poppins_500Medium", fontSize: 34, lineHeight: 44, color: tone("#000") },
+  pStatLabel: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 18, textAlign: "center", color: tone("#000"), marginTop: 2 },
+  pSettings: { marginTop: 12, paddingHorizontal: 20, paddingVertical: 10, borderRadius: 25, backgroundColor: surface("#fff") },
   pRow: { flexDirection: "row", alignItems: "center", height: 56, gap: 14 },
-  pRowLabel: { flex: 1, fontFamily: "Poppins_400Regular", fontSize: 16, color: "#000" },
-  pRowValue: { fontFamily: "Poppins_400Regular", fontSize: 15, color: "rgba(0,0,0,0.45)" },
+  pRowLabel: { flex: 1, fontFamily: "Poppins_400Regular", fontSize: 16, color: tone("#000") },
+  pRowValue: { fontFamily: "Poppins_400Regular", fontSize: 15, color: tone("rgba(0,0,0,0.45)") },
   pSignOut: { marginTop: 10 },
   pAvatarCenter: { alignItems: "center", justifyContent: "center" },
-  pAvatarText: { fontFamily: "Poppins_600SemiBold", fontSize: 26, color: "rgba(0,0,0,0.45)" },
+  pAvatarText: { fontFamily: "Poppins_600SemiBold", fontSize: 26, color: tone("rgba(0,0,0,0.45)") },
   pHint: { marginTop: 10, marginBottom: 4, paddingHorizontal: 6 },
   pDoc: { paddingVertical: 20, gap: 4 },
   pDocItem: { gap: 4, marginBottom: 12 },
-  pDocHeading: { fontFamily: "Poppins_500Medium", fontSize: 16, lineHeight: 23, color: "#000" },
-  pDocBody: { fontFamily: "Poppins_400Regular", fontSize: 15, lineHeight: 23, color: "rgba(0,0,0,0.6)" },
+  pDocHeading: { fontFamily: "Poppins_500Medium", fontSize: 16, lineHeight: 23, color: tone("#000") },
+  pDocBody: { fontFamily: "Poppins_400Regular", fontSize: 15, lineHeight: 23, color: tone("rgba(0,0,0,0.6)") },
   pAbout: { alignItems: "center", paddingVertical: 28 },
   pAboutName: { marginTop: 16 },
   pAboutText: { textAlign: "center", marginTop: 8 },
   pSignOutText: { color: "#dc2626" },
   toggle: { width: 48, height: 28, borderRadius: 14, padding: 3 },
-  knob: { width: 22, height: 22, borderRadius: 11, backgroundColor: "#fff" },
+  knob: { width: 22, height: 22, borderRadius: 11, backgroundColor: WHITE },
   // History, measured from the mockup.
   hxFilters: { marginTop: 0, marginBottom: 12 },
   hxChip: { paddingRight: 16, gap: 6, maxWidth: 200 },
-  hxNav: { width: 36, height: 36, borderRadius: 18, backgroundColor: "#F3F3F3", alignItems: "center", justifyContent: "center", marginLeft: 8 },
+  hxNav: { width: 36, height: 36, borderRadius: 18, backgroundColor: surface("#F3F3F3"), alignItems: "center", justifyContent: "center", marginLeft: 8 },
   hxStats: { flexDirection: "row", gap: 8, marginBottom: 12 },
-  hxStat: { flex: 1, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 16, backgroundColor: "#F3F3F3" },
-  hxStatNum: { fontFamily: "Poppins_600SemiBold", fontSize: 20, lineHeight: 26, color: "#000" },
+  hxStat: { flex: 1, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 16, backgroundColor: surface("#F3F3F3") },
+  hxStatNum: { fontFamily: "Poppins_600SemiBold", fontSize: 20, lineHeight: 26, color: tone("#000") },
   hxStatRow: { flexDirection: "row", alignItems: "center", gap: 6 },
-  hxStatLabel: { fontFamily: "Poppins_400Regular", fontSize: 12, color: "rgba(0,0,0,0.55)" },
-  hxDayQuiet: { color: "rgba(0,0,0,0.55)" },
+  hxStatLabel: { fontFamily: "Poppins_400Regular", fontSize: 12, color: tone("rgba(0,0,0,0.55)") },
+  hxDayQuiet: { color: tone("rgba(0,0,0,0.55)") },
   hxShowing: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 14, paddingHorizontal: 6 },
-  hxShowingText: { fontFamily: "Poppins_500Medium", fontSize: 14, color: "#000" },
-  hxShowAll: { fontFamily: "Poppins_600SemiBold", fontSize: 14, color: "#000", textDecorationLine: "underline" },
+  hxShowingText: { fontFamily: "Poppins_500Medium", fontSize: 14, color: tone("#000") },
+  hxShowAll: { fontFamily: "Poppins_600SemiBold", fontSize: 14, color: tone("#000"), textDecorationLine: "underline" },
   hxDayHead: { marginTop: 22, marginBottom: 2, paddingHorizontal: 6 },
-  hxEntry: { marginTop: 10, padding: 16, borderRadius: 22, backgroundColor: "#fff" },
+  hxEntry: { marginTop: 10, padding: 16, borderRadius: 22, backgroundColor: surface("#fff") },
   hxBadge: { width: 42, height: 42, borderRadius: 21, alignItems: "center", justifyContent: "center", alignSelf: "flex-start" },
-  hxTitle: { fontFamily: "Poppins_600SemiBold", fontSize: 15, lineHeight: 21, color: "#000" },
-  hxDetail: { fontFamily: "Poppins_400Regular", fontSize: 14, lineHeight: 20, color: "rgba(0,0,0,0.6)", marginTop: 2 },
+  hxTitle: { fontFamily: "Poppins_600SemiBold", fontSize: 15, lineHeight: 21, color: tone("#000") },
+  hxDetail: { fontFamily: "Poppins_400Regular", fontSize: 14, lineHeight: 20, color: tone("rgba(0,0,0,0.6)"), marginTop: 2 },
   hxMeta: { flexDirection: "row", alignItems: "center", gap: 5, marginTop: 8 },
-  hxMetaText: { flexShrink: 1, fontFamily: "Poppins_500Medium", fontSize: 12, color: "rgba(0,0,0,0.45)" },
+  hxMetaText: { flexShrink: 1, fontFamily: "Poppins_500Medium", fontSize: 12, color: tone("rgba(0,0,0,0.45)") },
   hxActions: { flexDirection: "row", gap: 8, marginTop: 14 },
   hxAction: { flex: 1, flexDirection: "row", gap: 8, height: 46, marginTop: 0 },
   hxRemove: { flex: 0, paddingHorizontal: 18 },
   hxNone: { alignItems: "center", gap: 8, marginTop: 24 },
-  hCal: { padding: 20, borderRadius: 25, backgroundColor: "#fff" },
+  hCal: { padding: 20, borderRadius: 25, backgroundColor: surface("#fff") },
   hMonthRow: { flexDirection: "row", alignItems: "center", marginBottom: 14 },
-  hMonth: { flex: 1, fontFamily: "Poppins_600SemiBold", fontSize: 17, color: "#000" },
+  hMonth: { flex: 1, fontFamily: "Poppins_600SemiBold", fontSize: 17, color: tone("#000") },
   hWeek: { flexDirection: "row" },
   hCell: { flex: 1, height: 44, alignItems: "center", justifyContent: "center" },
-  hWeekday: { fontFamily: "Poppins_500Medium", fontSize: 12, lineHeight: 32, textAlign: "center", color: "rgba(0,0,0,0.4)" },
+  hWeekday: { fontFamily: "Poppins_500Medium", fontSize: 12, lineHeight: 32, textAlign: "center", color: tone("rgba(0,0,0,0.4)") },
   hDay: { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center" },
-  hToday: { borderWidth: 1, borderColor: "#000" },
-  hSelected: { backgroundColor: "#000" },
-  hDayText: { fontFamily: "Poppins_400Regular", fontSize: 15, color: "#000" },
+  hToday: { borderWidth: 1, borderColor: tone("#000") },
+  hSelected: { backgroundColor: surface("#000") },
+  hDayText: { fontFamily: "Poppins_400Regular", fontSize: 15, color: tone("#000") },
   hDayDot: { position: "absolute", bottom: -2 }, // just under the day circle
   dot: { width: 6, height: 6, borderRadius: 3 },
   dotBig: { width: 10, height: 10, borderRadius: 5 },
   dotFixed: { backgroundColor: GREEN },
-  dotChecked: { backgroundColor: "#000" },
-  dotPro: { borderWidth: 1, borderColor: "#000", backgroundColor: "#fff" },
+  dotChecked: { backgroundColor: surface("#000") },
+  dotPro: { borderWidth: 1, borderColor: tone("#000"), backgroundColor: surface("#fff") },
   // New-account questions.
   setup: { paddingHorizontal: 20, paddingTop: 26, paddingBottom: 20 },
-  setupTitle: { fontFamily: "Poppins_600SemiBold", fontSize: 26, lineHeight: 34, color: "#000", marginTop: 8 },
-  setupSub: { fontFamily: "Poppins_400Regular", fontSize: 15, lineHeight: 22, color: "rgba(0,0,0,0.55)", marginTop: 6, marginBottom: 22 },
+  setupTitle: { fontFamily: "Poppins_600SemiBold", fontSize: 26, lineHeight: 34, color: tone("#000"), marginTop: 8 },
+  setupSub: { fontFamily: "Poppins_400Regular", fontSize: 15, lineHeight: 22, color: tone("rgba(0,0,0,0.55)"), marginTop: 6, marginBottom: 22 },
   setupInput: { fontSize: 17 },
   setupGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
-  setupTile: { width: "48%", flexGrow: 1, height: 96, borderRadius: 22, backgroundColor: "#fff", alignItems: "center", justifyContent: "center", gap: 8 },
-  setupTileText: { fontFamily: "Poppins_500Medium", fontSize: 15, color: "#000" },
-  setupOn: { backgroundColor: "#000" },
-  setupOption: { flexDirection: "row", alignItems: "center", gap: 12, padding: 20, marginBottom: 10, borderRadius: 22, backgroundColor: "#fff" },
-  setupOptionTitle: { fontFamily: "Poppins_500Medium", fontSize: 16, lineHeight: 23, color: "#000" },
-  setupOptionDetail: { fontFamily: "Poppins_400Regular", fontSize: 14, lineHeight: 20, color: "rgba(0,0,0,0.55)" },
-  setupOptionDetailOn: { color: "rgba(255,255,255,0.7)" },
+  setupTile: { width: "48%", flexGrow: 1, height: 96, borderRadius: 22, backgroundColor: surface("#fff"), alignItems: "center", justifyContent: "center", gap: 8 },
+  setupTileText: { fontFamily: "Poppins_500Medium", fontSize: 15, color: tone("#000") },
+  setupOn: { backgroundColor: surface("#000") },
+  setupOption: { flexDirection: "row", alignItems: "center", gap: 12, padding: 20, marginBottom: 10, borderRadius: 22, backgroundColor: surface("#fff") },
+  setupOptionTitle: { fontFamily: "Poppins_500Medium", fontSize: 16, lineHeight: 23, color: tone("#000") },
+  setupOptionDetail: { fontFamily: "Poppins_400Regular", fontSize: 14, lineHeight: 20, color: tone("rgba(0,0,0,0.55)") },
+  setupOptionDetailOn: { color: tone("rgba(255,255,255,0.7)") },
   // Sign in / Create account, measured from the mockups.
   auth: { paddingHorizontal: 20, paddingTop: 20, paddingBottom: 30 },
-  authTitle: { fontFamily: "Poppins_500Medium", fontSize: 32, lineHeight: 42, textAlign: "center", color: "#000" },
-  authSub: { fontFamily: "Poppins_400Regular", fontSize: 15, lineHeight: 22, textAlign: "center", color: "#000" },
-  seg: { flexDirection: "row", height: 59, marginTop: 22, padding: 7, borderRadius: 100, backgroundColor: "#fff" },
-  segPill: { position: "absolute", top: 7, bottom: 7, left: 7, borderRadius: 100, backgroundColor: "#000" },
+  authTitle: { fontFamily: "Poppins_500Medium", fontSize: 32, lineHeight: 42, textAlign: "center", color: tone("#000") },
+  authSub: { fontFamily: "Poppins_400Regular", fontSize: 15, lineHeight: 22, textAlign: "center", color: tone("#000") },
+  seg: { flexDirection: "row", height: 59, marginTop: 22, padding: 7, borderRadius: 100, backgroundColor: surface("#fff") },
+  segPill: { position: "absolute", top: 7, bottom: 7, left: 7, borderRadius: 100, backgroundColor: surface("#000") },
   segItem: { flex: 1, alignItems: "center", justifyContent: "center" },
-  segText: { fontFamily: "Poppins_600SemiBold", fontSize: 15, color: "#000" },
-  segTextOn: { color: "#fff" },
-  authLabel: { fontFamily: "Poppins_400Regular", fontSize: 15, lineHeight: 22, color: "#000", marginTop: 20, marginBottom: 10 },
-  authInput: { height: 58, paddingHorizontal: 20, borderRadius: 100, backgroundColor: "#fff", borderWidth: 1, borderColor: "rgba(0,0,0,0.05)", fontFamily: "Poppins_400Regular", fontSize: 15, color: "#000" },
+  segText: { fontFamily: "Poppins_600SemiBold", fontSize: 15, color: tone("#000") },
+  segTextOn: { color: tone("#fff") },
+  authLabel: { fontFamily: "Poppins_400Regular", fontSize: 15, lineHeight: 22, color: tone("#000"), marginTop: 20, marginBottom: 10 },
+  authInput: { height: 58, paddingHorizontal: 20, borderRadius: 100, backgroundColor: surface("#fff"), borderWidth: 1, borderColor: tone("rgba(0,0,0,0.05)"), fontFamily: "Poppins_400Regular", fontSize: 15, color: tone("#000") },
   authInputSecret: { paddingRight: 52 }, // room for the eye button
   eye: { position: "absolute", right: 20, top: 0, bottom: 0, justifyContent: "center" },
   forgot: { alignSelf: "flex-end", marginTop: 10 },
-  forgotText: { fontFamily: "Poppins_400Regular", fontSize: 13, color: "rgba(0,0,0,0.5)" },
-  authNote: { fontFamily: "Poppins_400Regular", fontSize: 13, textAlign: "center", color: "rgba(0,0,0,0.5)", marginTop: 12 },
+  forgotText: { fontFamily: "Poppins_400Regular", fontSize: 13, color: tone("rgba(0,0,0,0.5)") },
+  authNote: { fontFamily: "Poppins_400Regular", fontSize: 13, textAlign: "center", color: tone("rgba(0,0,0,0.5)"), marginTop: 12 },
   authBtn: { marginTop: 20 },
   divider: { flexDirection: "row", alignItems: "center", marginVertical: 14 },
-  dividerLine: { flex: 1, height: 1, backgroundColor: "rgba(0,0,0,0.2)" },
-  dividerText: { fontFamily: "Poppins_400Regular", fontSize: 14, color: "rgba(0,0,0,0.5)", marginHorizontal: 18 },
-  googleBtn: { flexDirection: "row", gap: 10, height: 59, borderRadius: 100, backgroundColor: "#fff", alignItems: "center", justifyContent: "center" },
-  googleText: { fontFamily: "Poppins_600SemiBold", fontSize: 15, color: "#000" },
-  welcomeLink: { fontFamily: "Poppins_400Regular", fontSize: 12, textAlign: "center", color: "rgba(0,0,0,0.5)", marginTop: 12 }, // the Home logo, scaled up to the start page's size
+  dividerLine: { flex: 1, height: 1, backgroundColor: surface("rgba(0,0,0,0.2)") },
+  dividerText: { fontFamily: "Poppins_400Regular", fontSize: 14, color: tone("rgba(0,0,0,0.5)"), marginHorizontal: 18 },
+  googleBtn: { flexDirection: "row", gap: 10, height: 59, borderRadius: 100, backgroundColor: surface("#fff"), alignItems: "center", justifyContent: "center" },
+  googleText: { fontFamily: "Poppins_600SemiBold", fontSize: 15, color: tone("#000") },
+  welcomeLink: { fontFamily: "Poppins_400Regular", fontSize: 12, textAlign: "center", color: tone("rgba(0,0,0,0.5)"), marginTop: 12 }, // the Home logo, scaled up to the start page's size
   // Centered horizontally, with the circle's middle ~90pt above the bottom (behind the message bar).
   glowClip: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, overflow: "hidden" },
   glow: { position: "absolute", left: "50%", marginLeft: -GLOW_R, bottom: GLOW_Y - GLOW_R },
-  greeting: { fontFamily: SERIF, fontSize: 28, lineHeight: 36, textAlign: "center", color: "#000", marginTop: 18, marginBottom: 28 },
+  greeting: { fontFamily: SERIF, fontSize: 28, lineHeight: 36, textAlign: "center", color: tone("#000"), marginTop: 18, marginBottom: 28 },
   // Measured from the logo artwork (287 tall), scaled to 80: the D's right side is a full half-circle.
   logo: { flexDirection: "row", gap: 7, height: 80, alignSelf: "center" },
-  logoBar: { width: 20, borderRadius: 3.5, backgroundColor: "#000" },
+  logoBar: { width: 20, borderRadius: 3.5, backgroundColor: tone("#000") },
   logoCol: { width: 38, gap: 7 },
-  logoTop: { width: 36, height: 22, borderRadius: 3.5, backgroundColor: "#000" },
-  logoD: { flex: 1, borderRadius: 3.5, borderTopRightRadius: 25.5, borderBottomRightRadius: 25.5, backgroundColor: "#000" },
+  logoTop: { width: 36, height: 22, borderRadius: 3.5, backgroundColor: tone("#000") },
+  logoD: { flex: 1, borderRadius: 3.5, borderTopRightRadius: 25.5, borderBottomRightRadius: 25.5, backgroundColor: tone("#000") },
   cards: { flexDirection: "row", gap: 10 },
-  card: { flex: 1, backgroundColor: "#fff", borderRadius: 25, paddingVertical: 20, paddingHorizontal: 18 },
+  card: { flex: 1, backgroundColor: surface("#fff"), borderRadius: 25, paddingVertical: 20, paddingHorizontal: 18 },
   cardIcon: { marginBottom: 18 },
-  cardTitle: { fontFamily: "Poppins_500Medium", fontSize: 15, lineHeight: 22, color: "#000" },
-  cardSub: { fontFamily: "Poppins_400Regular", fontSize: 12, lineHeight: 20, color: "rgba(0,0,0,0.5)" },
+  cardTitle: { fontFamily: "Poppins_500Medium", fontSize: 15, lineHeight: 22, color: tone("#000") },
+  cardSub: { fontFamily: "Poppins_400Regular", fontSize: 12, lineHeight: 20, color: tone("rgba(0,0,0,0.5)") },
 
   log: { paddingHorizontal: 20, paddingTop: 16, paddingBottom: 12, gap: 10 },
   userTurn: { alignItems: "flex-end", gap: 10 },
   assistantTurn: { alignItems: "flex-start", gap: 10 },
-  photo: { width: 150, height: 178, borderRadius: 28, borderWidth: 3, borderColor: "#fff", overflow: "hidden", backgroundColor: "#ddd" },
+  photo: { width: 150, height: 178, borderRadius: 28, borderWidth: 3, borderColor: surface("#fff"), overflow: "hidden", backgroundColor: surface("#ddd") },
   photoImg: { width: "100%", height: "100%" },
   bubble: { paddingVertical: 14, paddingHorizontal: 20, borderRadius: 25, maxWidth: "80%" },
-  user: { backgroundColor: "#000", borderBottomRightRadius: 6 },
-  assistant: { alignSelf: "flex-start", backgroundColor: "#fff" },
+  user: { backgroundColor: surface("#000"), borderBottomRightRadius: 6 },
+  assistant: { alignSelf: "flex-start", backgroundColor: surface("#fff") },
   qCard: { paddingVertical: 20, gap: 16 },
-  msgText: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 20, color: "#000" },
-  userText: { color: "#fff" },
-  dim: { color: "rgba(0,0,0,0.5)" },
+  msgText: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 20, color: tone("#000") },
+  userText: { color: tone("#fff") },
+  dim: { color: tone("rgba(0,0,0,0.5)") },
   chips: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 10 },
-  chip: { paddingHorizontal: 20, height: 30, borderRadius: 100, borderWidth: 1, borderColor: "rgba(0,0,0,0.1)", justifyContent: "center", backgroundColor: "#fff" },
-  chipOn: { backgroundColor: "#000", borderColor: "#000" },
+  chip: { paddingHorizontal: 20, height: 30, borderRadius: 100, borderWidth: 1, borderColor: tone("rgba(0,0,0,0.1)"), justifyContent: "center", backgroundColor: surface("#fff") },
+  chipOn: { backgroundColor: surface("#000"), borderColor: tone("#000") },
   typing: { flexDirection: "row", gap: 6, paddingVertical: 20 },
-  typingDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: "rgba(0,0,0,0.35)" },
-  chipText: { fontFamily: "Poppins_400Regular", fontSize: 13, color: "#000" },
-  chipTextOn: { color: "#fff" },
+  typingDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: surface("rgba(0,0,0,0.35)") },
+  chipText: { fontFamily: "Poppins_400Regular", fontSize: 13, color: tone("#000") },
+  chipTextOn: { color: tone("#fff") },
   error: { fontFamily: "Poppins_400Regular", color: "#dc2626", textAlign: "center", marginTop: 12 },
 
   footer: { paddingHorizontal: 20, paddingBottom: 20, paddingTop: 8 },
   usage: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5, marginBottom: 12 },
-  usagePip: { width: 16, height: 6, borderRadius: 3, backgroundColor: "#DDDDDD" },
+  usagePip: { width: 16, height: 6, borderRadius: 3, backgroundColor: surface("#DDDDDD") },
   usagePipOn: { backgroundColor: GREEN },
   usageText: { marginLeft: 5 },
-  hint: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 20, textAlign: "center", color: "rgba(0,0,0,0.4)", marginBottom: 12 },
+  hint: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 20, textAlign: "center", color: tone("rgba(0,0,0,0.4)"), marginBottom: 12 },
   preview: { alignSelf: "flex-start", marginBottom: 8, marginLeft: 8 },
   thumb: { width: 64, height: 64, borderRadius: 14 },
-  remove: { position: "absolute", top: -6, right: -6, width: 22, height: 22, borderRadius: 11, backgroundColor: "#000", alignItems: "center", justifyContent: "center" },
+  remove: { position: "absolute", top: -6, right: -6, width: 22, height: 22, borderRadius: 11, backgroundColor: surface("#000"), alignItems: "center", justifyContent: "center" },
   bar: {
     height: 59,
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#fff",
+    backgroundColor: surface("#fff"),
     borderWidth: 1,
-    borderColor: "rgba(0,0,0,0.07)",
+    borderColor: tone("rgba(0,0,0,0.07)"),
     borderRadius: 100,
     paddingLeft: 20,
     paddingRight: 6,
   },
   // bottom = footer's bottom padding (20) + bar height (59) + an 8pt gap.
-  attachMenu: { position: "absolute", left: 20, bottom: 87, padding: 6, borderRadius: 22, backgroundColor: "#fff", borderWidth: 1, borderColor: "rgba(0,0,0,0.07)" },
+  attachMenu: { position: "absolute", left: 20, bottom: 87, padding: 6, borderRadius: 22, backgroundColor: surface("#fff"), borderWidth: 1, borderColor: tone("rgba(0,0,0,0.07)") },
   attachItem: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 12, paddingHorizontal: 14, borderRadius: 16 },
-  attachText: { fontFamily: "Poppins_400Regular", fontSize: 14, color: "#000" },
-  input: { flex: 1, height: "100%", marginLeft: 15, fontFamily: "Poppins_400Regular", fontSize: 15, color: "#000" },
+  attachText: { fontFamily: "Poppins_400Regular", fontSize: 14, color: tone("#000") },
+  input: { flex: 1, height: "100%", marginLeft: 15, fontFamily: "Poppins_400Regular", fontSize: 15, color: tone("#000") },
   send: { width: 45, height: 45, borderRadius: 100, backgroundColor: GREEN, alignItems: "center", justifyContent: "center" },
   disabled: { opacity: 0.5 },
 
@@ -3587,126 +3682,138 @@ const s = StyleSheet.create({
   ring: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0 },
   // Centered on the arc's stroke, which sits RING_PAD in from the edge.
   ringDot: { position: "absolute", top: RING_PAD - 5, left: "50%", marginLeft: -5, width: 10, height: 10, borderRadius: 5, backgroundColor: GREEN },
-  innerRing: { borderWidth: 1.5, borderColor: "#E3E3E3" },
-  diagTitle: { fontFamily: "Poppins_500Medium", fontSize: 32, lineHeight: 48, textAlign: "center", color: "#000", marginTop: 20 },
-  diagSub: { fontFamily: "Poppins_400Regular", fontSize: 15, lineHeight: 22, textAlign: "center", color: "#000" },
-  diagCard: { backgroundColor: "#fff", borderRadius: 25, marginHorizontal: 20, marginTop: 16, paddingHorizontal: 20, paddingVertical: 25, gap: 20 },
+  innerRing: { borderWidth: 1.5, borderColor: tone("#E3E3E3") },
+  diagTitle: { fontFamily: "Poppins_500Medium", fontSize: 32, lineHeight: 48, textAlign: "center", color: tone("#000"), marginTop: 20 },
+  diagSub: { fontFamily: "Poppins_400Regular", fontSize: 15, lineHeight: 22, textAlign: "center", color: tone("#000") },
+  diagCard: { backgroundColor: surface("#fff"), borderRadius: 25, marginHorizontal: 20, marginTop: 16, paddingHorizontal: 20, paddingVertical: 25, gap: 20 },
   stepRow: { flexDirection: "row", alignItems: "center" },
   stepIcon: { width: 30, height: 30, borderRadius: 15, alignItems: "center", justifyContent: "center" },
-  stepDone: { backgroundColor: "#000" },
-  stepActive: { borderWidth: 1.5, borderColor: GREEN, backgroundColor: "#fff" },
+  stepDone: { backgroundColor: surface("#000") },
+  stepActive: { borderWidth: 1.5, borderColor: GREEN, backgroundColor: surface("#fff") },
   stepDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: GREEN },
   stepRipple: { position: "absolute", backgroundColor: GREEN },
-  stepNext: { borderWidth: 1.5, borderColor: "rgba(0,0,0,0.4)", borderStyle: "dashed" },
-  stepLabel: { flex: 1, marginLeft: 10, fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 20, color: "#000" },
-  stepStatus: { maxWidth: 95, marginLeft: 8, fontFamily: "Poppins_400Regular", fontSize: 12, lineHeight: 17, textAlign: "right", color: "rgba(0,0,0,0.4)" },
-  muted: { color: "rgba(0,0,0,0.4)" },
+  stepNext: { borderWidth: 1.5, borderColor: tone("rgba(0,0,0,0.4)"), borderStyle: "dashed" },
+  stepLabel: { flex: 1, marginLeft: 10, fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 20, color: tone("#000") },
+  stepStatus: { maxWidth: 95, marginLeft: 8, fontFamily: "Poppins_400Regular", fontSize: 12, lineHeight: 17, textAlign: "right", color: tone("rgba(0,0,0,0.4)") },
+  muted: { color: tone("rgba(0,0,0,0.4)") },
   greenText: { color: GREEN },
   verdictCard: { gap: 2 },
-  verdictLabel: { fontFamily: "Poppins_400Regular", fontSize: 11, color: "rgba(0,0,0,0.4)" },
-  verdictTitle: { fontFamily: "Poppins_500Medium", fontSize: 15, lineHeight: 22, color: "#000" },
+  verdictLabel: { fontFamily: "Poppins_400Regular", fontSize: 11, color: tone("rgba(0,0,0,0.4)") },
+  verdictTitle: { fontFamily: "Poppins_500Medium", fontSize: 15, lineHeight: 22, color: tone("#000") },
   verdictLink: { flexDirection: "row", alignItems: "center", gap: 2, marginTop: 4 },
 
   result: { paddingHorizontal: 20, paddingTop: 16, paddingBottom: 20 },
-  symptom: { alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 10, height: 40, paddingHorizontal: 16, borderRadius: 100, backgroundColor: "#fff" },
+  symptom: { alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 10, height: 40, paddingHorizontal: 16, borderRadius: 100, backgroundColor: surface("#fff") },
   symptomDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: GREEN },
-  symptomText: { fontFamily: "Poppins_400Regular", fontSize: 13, color: "#000" },
+  symptomText: { fontFamily: "Poppins_400Regular", fontSize: 13, color: tone("#000") },
   metaRow: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 10 },
-  metaText: { flex: 1, fontFamily: "Poppins_400Regular", fontSize: 11, lineHeight: 16, color: "rgba(0,0,0,0.4)" },
-  verdict: { fontFamily: "Poppins_500Medium", fontSize: 20, lineHeight: 28, color: "#000", marginTop: 12 },
+  metaText: { flex: 1, fontFamily: "Poppins_400Regular", fontSize: 11, lineHeight: 16, color: tone("rgba(0,0,0,0.4)") },
+  verdict: { fontFamily: "Poppins_500Medium", fontSize: 20, lineHeight: 28, color: tone("#000"), marginTop: 12 },
   tags: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 12 },
   tag: { flexDirection: "row", alignItems: "center", gap: 10, height: 30, paddingHorizontal: 20, borderRadius: 100 },
-  tagBlack: { backgroundColor: "#000" },
+  tagBlack: { backgroundColor: surface("#000") },
   tagGreen: { backgroundColor: GREEN },
-  tagWhite: { backgroundColor: "#fff", borderWidth: 1, borderColor: "rgba(0,0,0,0.1)" },
-  tagWarn: { backgroundColor: "#FFD9D2" },
-  tagText: { fontFamily: "Poppins_400Regular", fontSize: 13, color: "#000" },
-  tagTextLight: { color: "#fff" },
+  tagWhite: { backgroundColor: surface("#fff"), borderWidth: 1, borderColor: tone("rgba(0,0,0,0.1)") },
+  tagWarn: { backgroundColor: surface("#FFD9D2") },
+  tagText: { fontFamily: "Poppins_400Regular", fontSize: 13, color: tone("#000") },
+  onAccent: { color: ON_ACCENT }, // text on green
+  tagTextLight: { color: tone("#fff") },
   list: { gap: 16, marginTop: 20 },
   listRow: { flexDirection: "row", alignItems: "flex-start", gap: 11 },
-  num: { width: 20, height: 20, borderRadius: 10, backgroundColor: "#E3E3E3", alignItems: "center", justifyContent: "center", marginTop: 1 },
-  numText: { fontFamily: "Poppins_500Medium", fontSize: 10, lineHeight: 14, color: "#000" },
-  listText: { flex: 1, fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 20, color: "#000" },
+  num: { width: 20, height: 20, borderRadius: 10, backgroundColor: surface("#E3E3E3"), alignItems: "center", justifyContent: "center", marginTop: 1 },
+  numText: { fontFamily: "Poppins_500Medium", fontSize: 10, lineHeight: 14, color: tone("#000") },
+  listText: { flex: 1, fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 20, color: tone("#000") },
   listLead: { fontFamily: "Poppins_500Medium" },
   actions: { flexDirection: "row", alignItems: "center", gap: 10 },
   actionsGap: { marginBottom: 12 },
-  proCard: { backgroundColor: "#000", borderRadius: 25, padding: 20, marginTop: 16 },
+  proCard: { backgroundColor: surface("#000"), borderRadius: 25, padding: 20, marginTop: 16 },
   proLabelRow: { flexDirection: "row", alignItems: "center", gap: 11 },
   proLabel: { fontFamily: "Poppins_400Regular", fontSize: 11, color: GREEN },
-  proTitle: { fontFamily: "Poppins_500Medium", fontSize: 20, lineHeight: 28, color: "#fff", marginTop: 10 },
-  proWhy: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 20, color: "#fff", marginTop: 2 },
+  proTitle: { fontFamily: "Poppins_500Medium", fontSize: 20, lineHeight: 28, color: tone("#fff"), marginTop: 10 },
+  proWhy: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 20, color: tone("#fff"), marginTop: 2 },
   proChips: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 10 },
-  proChip: { height: 30, paddingHorizontal: 10, borderRadius: 100, backgroundColor: "#2A2A2A", justifyContent: "center" },
-  proChipText: { fontFamily: "Poppins_400Regular", fontSize: 13, color: "#fff" },
-  nowCard: { backgroundColor: "#fff", borderRadius: 25, padding: 20, marginTop: 20, gap: 15 },
-  monoLabel: { fontFamily: MONO, fontSize: 11, letterSpacing: 1, color: "rgba(0,0,0,0.5)" },
+  proChip: { height: 30, paddingHorizontal: 10, borderRadius: 100, backgroundColor: surface("#2A2A2A"), justifyContent: "center" },
+  proChipText: { fontFamily: "Poppins_400Regular", fontSize: 13, color: tone("#fff") },
+  nowCard: { backgroundColor: surface("#fff"), borderRadius: 25, padding: 20, marginTop: 20, gap: 15 },
+  monoLabel: { fontFamily: MONO, fontSize: 11, letterSpacing: 1, color: tone("rgba(0,0,0,0.5)") },
   nowRow: { flexDirection: "row", alignItems: "flex-start", gap: 18 },
   nowIcon: { marginTop: 1 },
-  nowText: { flex: 1, fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 20, color: "#000" },
-  disclaimer: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 18, textAlign: "center", color: "rgba(0,0,0,0.4)", marginBottom: 12, paddingHorizontal: 20 },
+  nowText: { flex: 1, fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 20, color: tone("#000") },
+  disclaimer: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 18, textAlign: "center", color: tone("rgba(0,0,0,0.4)"), marginBottom: 12, paddingHorizontal: 20 },
   shopBtn: { height: 58 },
-  shopText: { fontFamily: "Poppins_500Medium", fontSize: 15, color: "#fff" },
+  shopText: { fontFamily: "Poppins_500Medium", fontSize: 15, color: tone("#fff") },
   bigCircle: { width: 58, height: 58 },
 
-  caseCard: { flexDirection: "row", alignItems: "center", gap: 18, backgroundColor: "#000", borderRadius: 25, paddingHorizontal: 24, paddingVertical: 20 },
-  caseText: { flex: 1, fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 20, color: "rgba(255,255,255,0.6)" },
-  caseDevice: { color: "#fff" },
+  caseCard: { flexDirection: "row", alignItems: "center", gap: 18, backgroundColor: surface("#000"), borderRadius: 25, paddingHorizontal: 24, paddingVertical: 20 },
+  caseText: { flex: 1, fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 20, color: tone("rgba(255,255,255,0.6)") },
+  caseDevice: { color: tone("#fff") },
   casePill: { height: 20, paddingHorizontal: 12, borderRadius: 100, backgroundColor: GREEN, justifyContent: "center" },
-  casePillText: { fontFamily: "Poppins_400Regular", fontSize: 11, color: "#000" },
-  nearBox: { flexDirection: "row", alignItems: "center", gap: 15, height: 44, paddingHorizontal: 20, marginTop: 10, borderRadius: 100, backgroundColor: "#fff", borderWidth: 1, borderColor: "rgba(0,0,0,0.07)" },
-  nearInput: { flex: 1, height: "100%", fontFamily: "Poppins_400Regular", fontSize: 15, color: "#000" },
-  map: { width: "100%", height: 231, borderRadius: 25, marginTop: 10, backgroundColor: "#E8E8E8", overflow: "hidden" },
+  casePillText: { fontFamily: "Poppins_400Regular", fontSize: 11, color: ON_ACCENT },
+  nearBox: { flexDirection: "row", alignItems: "center", gap: 15, height: 44, paddingHorizontal: 20, marginTop: 10, borderRadius: 100, backgroundColor: surface("#fff"), borderWidth: 1, borderColor: tone("rgba(0,0,0,0.07)") },
+  nearInput: { flex: 1, height: "100%", fontFamily: "Poppins_400Regular", fontSize: 15, color: tone("#000") },
+  map: { width: "100%", height: 231, borderRadius: 25, marginTop: 10, backgroundColor: surface("#E8E8E8"), overflow: "hidden" },
   filters: { marginTop: 10, marginHorizontal: -20 },
   filterRow: { gap: 10, paddingHorizontal: 20 },
-  filter: { height: 40, paddingHorizontal: 20, borderRadius: 100, backgroundColor: "#fff", justifyContent: "center" },
-  filterOn: { backgroundColor: "#000" },
-  filterText: { fontFamily: "Poppins_400Regular", fontSize: 14, color: "#000" },
+  filter: { height: 40, paddingHorizontal: 20, borderRadius: 100, backgroundColor: surface("#fff"), justifyContent: "center" },
+  filterOn: { backgroundColor: surface("#000") },
+  filterText: { fontFamily: "Poppins_400Regular", fontSize: 14, color: tone("#000") },
   shopCount: { marginTop: 15, marginBottom: 2 },
-  shopCard: { backgroundColor: "#fff", borderRadius: 25, padding: 20, marginTop: 10, gap: 18 },
+  shopCard: { backgroundColor: surface("#fff"), borderRadius: 25, padding: 20, marginTop: 10, gap: 18 },
   shopRow: { flexDirection: "row", alignItems: "center", gap: 10 },
-  rank: { width: 30, height: 30, borderRadius: 15, backgroundColor: "#000", alignItems: "center", justifyContent: "center" },
+  rank: { width: 30, height: 30, borderRadius: 15, backgroundColor: surface("#000"), alignItems: "center", justifyContent: "center" },
   rankOn: { backgroundColor: GREEN },
-  rankText: { fontFamily: "Poppins_500Medium", fontSize: 12, color: "#000" },
-  shopName: { flex: 1, fontFamily: "Poppins_500Medium", fontSize: 14, lineHeight: 20, color: "#000" },
-  shopDist: { fontFamily: MONO, fontSize: 11, color: "rgba(0,0,0,0.5)" },
-  shopHours: { flex: 1, fontFamily: "Poppins_400Regular", fontSize: 13, color: "#000" },
+  rankText: { fontFamily: "Poppins_500Medium", fontSize: 12, color: ON_ACCENT },
+  shopName: { flex: 1, fontFamily: "Poppins_500Medium", fontSize: 14, lineHeight: 20, color: tone("#000") },
+  shopDist: { fontFamily: MONO, fontSize: 11, color: tone("rgba(0,0,0,0.5)") },
+  shopHours: { flex: 1, fontFamily: "Poppins_400Regular", fontSize: 13, color: tone("#000") },
   tile: { position: "absolute", width: TILE, height: TILE },
-  pin: { position: "absolute", width: 26, height: 26, borderRadius: 13, backgroundColor: GREEN, borderWidth: 2, borderColor: "#fff", alignItems: "center", justifyContent: "center" },
-  pinText: { fontFamily: "Poppins_600SemiBold", fontSize: 11, color: "#000" },
-  youDot: { position: "absolute", width: 14, height: 14, borderRadius: 7, backgroundColor: "#000", borderWidth: 3, borderColor: "#fff" },
-  attribution: { position: "absolute", right: 12, bottom: 8, paddingHorizontal: 6, borderRadius: 6, backgroundColor: "rgba(255,255,255,0.8)", fontFamily: "Poppins_400Regular", fontSize: 9, color: "rgba(0,0,0,0.6)" },
-  callBtn: { borderWidth: 1, borderColor: "rgba(0,0,0,0.1)" },
+  pin: { position: "absolute", width: 26, height: 26, borderRadius: 13, backgroundColor: GREEN, borderWidth: 2, borderColor: surface("#fff"), alignItems: "center", justifyContent: "center" },
+  pinText: { fontFamily: "Poppins_600SemiBold", fontSize: 11, color: ON_ACCENT },
+  youDot: { position: "absolute", width: 14, height: 14, borderRadius: 7, backgroundColor: surface("#000"), borderWidth: 3, borderColor: surface("#fff") },
+  attribution: { position: "absolute", right: 12, bottom: 8, paddingHorizontal: 6, borderRadius: 6, backgroundColor: surface("rgba(255,255,255,0.8)"), fontFamily: "Poppins_400Regular", fontSize: 9, color: tone("rgba(0,0,0,0.6)") },
+  callBtn: { borderWidth: 1, borderColor: tone("rgba(0,0,0,0.1)") },
   routeLine: { position: "absolute", left: 0, top: 0 },
   mapControls: { position: "absolute", right: 10, top: 10, gap: 6 },
-  mapBtn: { width: 34, height: 34, borderRadius: 17, backgroundColor: "#fff", alignItems: "center", justifyContent: "center" },
-  routeTime: { fontFamily: "Poppins_600SemiBold", fontSize: 18, color: "#000" },
+  mapBtn: { width: 34, height: 34, borderRadius: 17, backgroundColor: surface("#fff"), alignItems: "center", justifyContent: "center" },
+  routeTime: { fontFamily: "Poppins_600SemiBold", fontSize: 18, color: tone("#000") },
   modeChip: { height: 34, paddingHorizontal: 14 },
   routeSteps: { gap: 12 },
-  turnIcon: { width: 30, height: 30, borderRadius: 15, backgroundColor: "#F2F2F2", alignItems: "center", justifyContent: "center" },
+  turnIcon: { width: 30, height: 30, borderRadius: 15, backgroundColor: surface("#F2F2F2"), alignItems: "center", justifyContent: "center" },
 
-  stepCount: { height: 45, paddingHorizontal: 20, borderRadius: 100, backgroundColor: "#fff", alignItems: "center", justifyContent: "center" },
-  stepCountText: { fontFamily: "Poppins_500Medium", fontSize: 15, color: "#000" },
+  stepCount: { height: 45, paddingHorizontal: 20, borderRadius: 100, backgroundColor: surface("#fff"), alignItems: "center", justifyContent: "center" },
+  stepCountText: { fontFamily: "Poppins_500Medium", fontSize: 15, color: tone("#000") },
   segments: { flexDirection: "row", gap: 5, paddingHorizontal: 20, marginTop: 16 },
-  segment: { flex: 1, height: 6, borderRadius: 3, backgroundColor: "#DDDDDD", overflow: "hidden" },
+  segment: { flex: 1, height: 6, borderRadius: 3, backgroundColor: surface("#DDDDDD"), overflow: "hidden" },
   segmentFill: { position: "absolute", left: 0, top: 0, right: 0, bottom: 0, backgroundColor: GREEN, transformOrigin: "left" },
-  segmentDone: { backgroundColor: "#000" },
+  segmentDone: { backgroundColor: surface("#000") },
   guideTags: { marginTop: 4 },
-  stepCard: { backgroundColor: "#fff", borderRadius: 25, padding: 20, marginTop: 20 },
-  stepTitle: { fontFamily: "Poppins_500Medium", fontSize: 20, lineHeight: 28, color: "#000", marginTop: 4 },
-  stepDetail: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 20, color: "#000", marginTop: 15, paddingHorizontal: 10 },
+  stepCard: { backgroundColor: surface("#fff"), borderRadius: 25, padding: 20, marginTop: 20 },
+  stepTitle: { fontFamily: "Poppins_500Medium", fontSize: 20, lineHeight: 28, color: tone("#000"), marginTop: 4 },
+  stepDetail: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 20, color: tone("#000"), marginTop: 15, paddingHorizontal: 10 },
   toolsLabel: { marginTop: 20, marginBottom: -2 },
-  toolChip: { backgroundColor: "#fff", paddingHorizontal: 10 },
-  warnCard: { flexDirection: "row", alignItems: "center", gap: 11, backgroundColor: "#000", borderRadius: 25, padding: 20, marginTop: 10 },
-  warnText: { flex: 1, fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 20, color: "#fff" },
-  backBtn: { width: 138, height: 58, borderRadius: 100, backgroundColor: "#fff", alignItems: "center", justifyContent: "center" },
-  backText: { fontFamily: "Poppins_500Medium", fontSize: 15, color: "#000" },
-  nextBtn: { flex: 1, height: 58, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, borderRadius: 100, backgroundColor: "#000" },
-  nextText: { fontFamily: "Poppins_500Medium", fontSize: 15, color: "#fff" },
+  toolChip: { backgroundColor: surface("#fff"), paddingHorizontal: 10 },
+  warnCard: { flexDirection: "row", alignItems: "center", gap: 11, backgroundColor: surface("#000"), borderRadius: 25, padding: 20, marginTop: 10 },
+  warnText: { flex: 1, fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 20, color: tone("#fff") },
+  backBtn: { width: 138, height: 58, borderRadius: 100, backgroundColor: surface("#fff"), alignItems: "center", justifyContent: "center" },
+  backText: { fontFamily: "Poppins_500Medium", fontSize: 15, color: tone("#000") },
+  nextBtn: { flex: 1, height: 58, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, borderRadius: 100, backgroundColor: surface("#000") },
+  nextText: { fontFamily: "Poppins_500Medium", fontSize: 15, color: tone("#fff") },
   nextIcon: { width: 30, height: 30, borderRadius: 15, backgroundColor: GREEN, alignItems: "center", justifyContent: "center" },
-  guideBtn: { flex: 1, height: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, borderRadius: 100, backgroundColor: "#000" },
-  guideText: { fontFamily: "Poppins_400Regular", fontSize: 15, color: "#fff" },
-  savedBtn: { backgroundColor: "#000" },
+  guideBtn: { flex: 1, height: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, borderRadius: 100, backgroundColor: surface("#000") },
+  guideText: { fontFamily: "Poppins_400Regular", fontSize: 15, color: tone("#fff") },
+  savedBtn: { backgroundColor: surface("#000") },
 
   cancel: { alignSelf: "center", paddingHorizontal: 24, paddingVertical: 16, marginBottom: 12 },
-  cancelText: { fontFamily: "Poppins_600SemiBold", fontSize: 15, color: "#000" },
+  cancelText: { fontFamily: "Poppins_600SemiBold", fontSize: 15, color: tone("#000") },
 });
+}
+DARK = true;
+const DARK_SHEET = makeStyles();
+DARK = false;
+const LIGHT_SHEET = makeStyles();
+let s = LIGHT_SHEET;
+function applyTheme(dark: boolean) {
+  DARK = dark;
+  s = dark ? DARK_SHEET : LIGHT_SHEET;
+}
+
