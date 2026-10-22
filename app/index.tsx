@@ -1232,6 +1232,7 @@ const NATIVE_GLASS = Platform.OS === "ios" && isLiquidGlassAvailable() && isGlas
 // Elsewhere: a flat blur of the page behind (Android reads it from `target`, the page wrapped in a BlurTargetView)
 // with almost no tint; on the web the backdrop is also refracted (lib/refraction.web.ts). Both get a hairline along the top and bottom edges that fades out toward the ends.
 function Glass({ target, style, children, onLayout }: { target: RefObject<View | null>; style?: ComponentProps<typeof View>["style"]; children: ReactNode; onLayout?: ComponentProps<typeof View>["onLayout"] }) {
+  const [box, setBox] = useState({ w: 0, h: 0 }); // the web lens is shaped to this exact size
   if (NATIVE_GLASS) {
     return (
       <GlassView glassEffectStyle="regular" isInteractive colorScheme={DARK ? "dark" : "light"} style={[s.glassNative, style]} onLayout={onLayout}>
@@ -1241,10 +1242,16 @@ function Glass({ target, style, children, onLayout }: { target: RefObject<View |
     );
   }
   return (
-    <View style={[s.glass, style]} onLayout={onLayout}>
+    <View
+      style={[s.glass, style]}
+      onLayout={(e) => {
+        setBox({ w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height });
+        onLayout?.(e);
+      }}
+    >
       {Platform.OS === "web" ? (
-        // Web: the backdrop is bent at the edges (refraction) as well as blurred, in Chromium browsers.
-        <View pointerEvents="none" style={[StyleSheet.absoluteFill, lensStyle()]} />
+        // Web: the backdrop bends along the glass's outline (refraction), in Chromium browsers.
+        <View pointerEvents="none" style={[StyleSheet.absoluteFill, lensStyle(box.w, box.h)]} />
       ) : (
         <BlurView intensity={28} tint={DARK ? "dark" : "light"} blurTarget={target} blurMethod="dimezisBlurViewSdk31Plus" style={StyleSheet.absoluteFill} />
       )}
