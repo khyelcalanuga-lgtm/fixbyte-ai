@@ -29,7 +29,7 @@ import { lensStyle } from "../lib/refraction";
 import { GlassView, isGlassEffectAPIAvailable, isLiquidGlassAvailable } from "expo-glass-effect";
 import { StatusBar } from "expo-status-bar";
 import * as ImagePicker from "expo-image-picker";
-import { Feather, MaterialCommunityIcons } from "@expo/vector-icons";
+import { Feather as FeatherOutline, Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Location from "expo-location";
 import Svg, { Circle, Path, Polyline, type CircleProps } from "react-native-svg";
 import { useFonts } from "expo-font";
@@ -70,7 +70,89 @@ type Diagnosis = {
   now: { icon: string; text: string }[];
   shopServices: string[]; // filter chips on the Repair Shops page
 };
-type FeatherName = keyof typeof Feather.glyphMap;
+type FeatherName = keyof typeof FeatherOutline.glyphMap;
+
+// Every icon is drawn solid with rounded corners: the app names icons the Feather way, and each one is drawn
+// with its filled, rounded twin from Ionicons. A name missing here falls back to Feather's outline.
+const SOLID: Partial<Record<FeatherName, keyof typeof Ionicons.glyphMap>> = {
+  "alert-circle": "alert-circle",
+  "alert-triangle": "warning",
+  "arrow-left": "arrow-back",
+  "arrow-right": "arrow-forward",
+  "arrow-up": "arrow-up",
+  battery: "battery-full",
+  bell: "notifications",
+  bookmark: "bookmark",
+  box: "cube",
+  camera: "camera",
+  check: "checkmark",
+  "check-circle": "checkmark-circle",
+  "chevron-left": "chevron-back",
+  "chevron-right": "chevron-forward",
+  clock: "time",
+  code: "code-slash",
+  "corner-up-left": "arrow-undo",
+  "corner-up-right": "arrow-redo",
+  cpu: "hardware-chip",
+  crosshair: "locate",
+  droplet: "water",
+  edit: "create",
+  "edit-2": "pencil",
+  eye: "eye",
+  "eye-off": "eye-off",
+  "file-text": "document-text",
+  flag: "flag",
+  globe: "globe",
+  "hard-drive": "server",
+  headphones: "headset",
+  "help-circle": "help-circle",
+  home: "home",
+  image: "image",
+  info: "information-circle",
+  key: "key",
+  layers: "layers",
+  lock: "lock-closed",
+  "log-out": "log-out",
+  "map-pin": "location",
+  "message-square": "chatbox",
+  minus: "remove",
+  monitor: "desktop",
+  moon: "moon",
+  "more-horizontal": "ellipsis-horizontal",
+  navigation: "navigate",
+  paperclip: "attach",
+  phone: "call",
+  plus: "add",
+  power: "power",
+  printer: "print",
+  "rotate-ccw": "refresh-circle",
+  "rotate-cw": "sync-circle",
+  save: "save",
+  search: "search",
+  settings: "settings",
+  share: "share",
+  shield: "shield",
+  slash: "ban",
+  smartphone: "phone-portrait",
+  speaker: "volume-high",
+  tablet: "tablet-portrait",
+  thermometer: "thermometer",
+  tool: "construct",
+  "trash-2": "trash",
+  tv: "tv",
+  "upload-cloud": "cloud-upload",
+  user: "person",
+  watch: "watch",
+  wind: "cloudy",
+  x: "close",
+  "x-octagon": "close-circle",
+  "zap-off": "flash-off",
+};
+
+function Feather({ name, ...props }: ComponentProps<typeof FeatherOutline>) {
+  const solid = SOLID[name as FeatherName];
+  return solid ? <Ionicons name={solid} {...props} /> : <FeatherOutline name={name} {...props} />;
+}
 // What the screen shows. toApi() turns these into OpenAI-style messages for the API route.
 type Turn =
   | { role: "user"; image?: string; text?: string; answers?: string }
@@ -602,7 +684,7 @@ export default function App() {
               <>
                 <View style={s.header}>
                   <Pressable onPress={() => setTab("gadgets")} style={s.circle} accessibilityLabel="My gadgets">
-                    <Feather name="smartphone" size={20} color={tone("#000")} />
+                    <View style={s.headerPhone} />
                   </Pressable>
                   <Text style={s.title}>FixByte AI</Text>
                   {/* ponytail: initial-letter avatar (from the profile name); swap for a photo via <Image> when there's one */}
@@ -3493,6 +3575,7 @@ function makeStyles() {
   tabItem: { flex: 1, alignItems: "center", justifyContent: "center", gap: 2 },
   tabIconBox: { width: 24, height: 24, alignItems: "center", justifyContent: "center" },
   solidPhone: { width: 14, height: 21, borderRadius: 4 }, // a phone silhouette, matched to the solid clock and person
+  headerPhone: { width: 12, height: 18, borderRadius: 3.5, backgroundColor: tone("#000") }, // same phone, at header-icon size
   tabLabel: { fontFamily: "Poppins_500Medium", fontSize: 10, lineHeight: 13, color: tone("rgba(0,0,0,0.7)") },
   tabLabelOn: { fontFamily: "Poppins_600SemiBold", color: tone("#000") },
   glass: { overflow: "hidden", borderRadius: 100, backgroundColor: DARK ? "rgba(36,36,40,0.45)" : "rgba(255,255,255,0.12)" },
