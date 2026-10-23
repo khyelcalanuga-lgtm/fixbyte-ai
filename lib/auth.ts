@@ -1,7 +1,16 @@
 import { Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { getApp, getApps, initializeApp } from "firebase/app";
-import { getAuth, initializeAuth, type Auth, type Persistence } from "firebase/auth";
+import {
+  getAuth,
+  GoogleAuthProvider,
+  initializeAuth,
+  signInWithCredential,
+  signInWithPopup,
+  type Auth,
+  type Persistence,
+} from "firebase/auth";
+import { GoogleSignin } from "@react-native-google-signin/google-signin";
 
 // Firebase sign-in. The config comes from .env (EXPO_PUBLIC_FIREBASE_*): these values identify the Firebase
 // project and are meant to ship inside the app; Firebase's own rules protect the accounts.
@@ -38,6 +47,26 @@ export function firebaseAuth(): Auth {
   return auth;
 }
 
+// Google sign-in. Web uses Firebase's popup. Phones use Google's own account picker and hand its ID token to
+// Firebase; that needs the "Web client ID" Firebase creates when Google is turned on (Authentication > Sign-in
+// method > Google > Web SDK configuration) and the APK's SHA-1 added to the Firebase Android app.
+export async function googleSignIn() {
+  const auth = firebaseAuth();
+  if (Platform.OS === "web") return void (await signInWithPopup(auth, new GoogleAuthProvider()));
+  const webClientId = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
+  if (!webClientId) throw { code: "auth/operation-not-allowed" };
+  GoogleSignin.configure({ webClientId });
+  await GoogleSignin.hasPlayServices();
+  const res = await GoogleSignin.signIn();
+  if (res.type !== "success") return; // closed the account picker
+  await signInWithCredential(auth, GoogleAuthProvider.credential(res.data.idToken));
+}
+
+// Forget the Google account on the phone too, so the next sign-in asks which account to use.
+export function googleSignOut() {
+  if (Platform.OS !== "web") GoogleSignin.signOut().catch(() => {});
+}
+
 // Firebase error codes in plain words.
 const MESSAGES: Record<string, string> = {
   "auth/invalid-email": "Enter a valid email address.",
@@ -55,6 +84,9 @@ const MESSAGES: Record<string, string> = {
   "auth/popup-blocked": "Your browser blocked the Google sign-in window. Allow pop-ups and try again.",
   "auth/operation-not-allowed": "This sign-in method isn't turned on in Firebase yet.",
   "auth/requires-recent-login": "Sign in again, then try that once more.",
+  // From the phone's Google module: 10 is DEVELOPER_ERROR (SHA-1 or web client ID doesn't match Firebase).
+  "10": "Google sign-in isn't set up for this version of the app.",
+  PLAY_SERVICES_NOT_AVAILABLE: "Google sign-in needs Google Play services on this phone.",
 };
 
 export function authMessage(e: unknown): string {

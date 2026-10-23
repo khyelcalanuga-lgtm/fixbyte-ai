@@ -41,14 +41,12 @@ import { apiFetch } from "../lib/api";
 import { DAILY_LIMIT, recordUse, resetUsage, usedToday } from "../lib/usage";
 import { load, save } from "../lib/store";
 import { allowReminders, cancelReminders, remindLater } from "../lib/reminders";
-import { authMessage, firebaseAuth, firebaseReady } from "../lib/auth";
+import { authMessage, firebaseAuth, firebaseReady, googleSignIn, googleSignOut } from "../lib/auth";
 import {
   createUserWithEmailAndPassword,
-  GoogleAuthProvider,
   onAuthStateChanged,
   sendPasswordResetEmail,
   signInWithEmailAndPassword,
-  signInWithPopup,
   signOut,
   updateProfile,
   type User,
@@ -330,6 +328,7 @@ export default function App() {
   // Sign out: ends the Firebase session (or the offline sign-in) and returns to the Welcome page.
   function leave() {
     if (firebaseReady) signOut(firebaseAuth()).catch(() => {});
+    googleSignOut();
     save(WELCOMED, "no");
     setWelcomed(false);
     setAuthMode(null);
@@ -2227,7 +2226,7 @@ function Setup({ settings, onFinish }: { settings: Settings; onFinish: (answers:
 }
 
 // Sign in and Create account: one page with a switch between the two, as in the mockups.
-// Accounts are Firebase email/password accounts; Google sign-in works on web (phones need a native module).
+// Accounts are Firebase email/password or Google accounts.
 // Until Firebase is configured in .env, the buttons just go to Home, as before.
 type AuthMode = "signin" | "register";
 const AUTH_TEXT = {
@@ -2285,10 +2284,9 @@ function Auth({ initial, onBack, onDone }: { initial: AuthMode; onBack: () => vo
   async function google() {
     setMessage(null);
     if (!firebaseReady) return onDone(false);
-    // ponytail: phones need a native Google module (and a development build, not Expo Go); web uses Firebase's popup.
-    if (Platform.OS !== "web") return setMessage({ text: "Google sign-in isn't available in the phone app yet. Use your email.", error: false });
+    // Phones use a native module: works in the APK, not in Expo Go.
     try {
-      await signInWithPopup(firebaseAuth(), new GoogleAuthProvider());
+      await googleSignIn();
     } catch (e) {
       fail(e);
     }
