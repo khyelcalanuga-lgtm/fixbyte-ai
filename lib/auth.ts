@@ -2,13 +2,18 @@ import { Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { getApp, getApps, initializeApp } from "firebase/app";
 import {
+  deleteUser,
+  EmailAuthProvider,
   getAuth,
   GoogleAuthProvider,
   initializeAuth,
+  reauthenticateWithCredential,
+  reauthenticateWithPopup,
   signInWithCredential,
   signInWithPopup,
   type Auth,
   type Persistence,
+  type User,
 } from "firebase/auth";
 import { GoogleSignin } from "@react-native-google-signin/google-signin";
 
@@ -53,13 +58,37 @@ export function firebaseAuth(): Auth {
 export async function googleSignIn() {
   const auth = firebaseAuth();
   if (Platform.OS === "web") return void (await signInWithPopup(auth, new GoogleAuthProvider()));
+  const cred = await phoneGoogleCredential();
+  if (cred) await signInWithCredential(auth, cred);
+}
+
+// The phone's Google account picker, as a Firebase credential; null if the picker was closed.
+async function phoneGoogleCredential() {
   const webClientId = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
   if (!webClientId) throw { code: "auth/operation-not-allowed" };
   GoogleSignin.configure({ webClientId });
   await GoogleSignin.hasPlayServices();
   const res = await GoogleSignin.signIn();
-  if (res.type !== "success") return; // closed the account picker
-  await signInWithCredential(auth, GoogleAuthProvider.credential(res.data.idToken));
+  return res.type === "success" ? GoogleAuthProvider.credential(res.data.idToken) : null;
+}
+
+export const isGoogleUser = (user: User) => user.providerData.some((p) => p.providerId === "google.com");
+
+// Deletes the account for good. Firebase only allows that right after signing in, so it first confirms who it
+// is: Google accounts pick the account again, email accounts give their password. False if the picker was closed.
+export async function deleteAccount(user: User, password: string): Promise<boolean> {
+  if (!isGoogleUser(user)) {
+    await reauthenticateWithCredential(user, EmailAuthProvider.credential(user.email ?? "", password));
+  } else if (Platform.OS === "web") {
+    await reauthenticateWithPopup(user, new GoogleAuthProvider()); // first await: the popup needs the tap's gesture
+  } else {
+    await GoogleSignin.signOut().catch(() => {}); // so the picker asks instead of reusing the last account
+    const cred = await phoneGoogleCredential();
+    if (!cred) return false;
+    await reauthenticateWithCredential(user, cred);
+  }
+  await deleteUser(user);
+  return true;
 }
 
 // Forget the Google account on the phone too, so the next sign-in asks which account to use.
@@ -84,6 +113,7 @@ const MESSAGES: Record<string, string> = {
   "auth/popup-blocked": "Your browser blocked the Google sign-in window. Allow pop-ups and try again.",
   "auth/operation-not-allowed": "This sign-in method isn't turned on in Firebase yet.",
   "auth/requires-recent-login": "Sign in again, then try that once more.",
+  "auth/user-mismatch": "That's a different Google account. Pick the one you're signed in with.",
   // From the phone's Google module: 10 is DEVELOPER_ERROR (SHA-1 or web client ID doesn't match Firebase).
   "10": "Google sign-in isn't set up for this version of the app.",
   PLAY_SERVICES_NOT_AVAILABLE: "Google sign-in needs Google Play services on this phone.",

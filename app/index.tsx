@@ -41,7 +41,7 @@ import { apiFetch } from "../lib/api";
 import { DAILY_LIMIT, recordUse, resetUsage, usedToday } from "../lib/usage";
 import { load, save } from "../lib/store";
 import { allowReminders, cancelReminders, remindLater } from "../lib/reminders";
-import { authMessage, firebaseAuth, firebaseReady, googleSignIn, googleSignOut } from "../lib/auth";
+import { authMessage, deleteAccount, firebaseAuth, firebaseReady, googleSignIn, googleSignOut, isGoogleUser } from "../lib/auth";
 import {
   createUserWithEmailAndPassword,
   onAuthStateChanged,
@@ -142,6 +142,7 @@ const SOLID: Partial<Record<FeatherName, keyof typeof Ionicons.glyphMap>> = {
   tv: "tv",
   "upload-cloud": "cloud-upload",
   user: "person",
+  "user-x": "person-remove",
   watch: "watch",
   wind: "cloudy",
   x: "close",
@@ -310,7 +311,8 @@ export default function App() {
   const [resultIdx, setResultIdx] = useState<number | null>(null); // turn shown on the Diagnosis page
   const [guideStep, setGuideStep] = useState<number | null>(null); // Repair Guide step on screen, null = closed
   const [showShops, setShowShops] = useState(false); // Repair Shops page, opened from "Find a repair shop"
-  const [used, setUsed] = useState(0); // diagnoses started today
+  const [used, setUsed] = useState(0); // diagnoses started today, by this account
+  const uid = user?.uid ?? "offline";
   const scroll = useRef<ScrollView>(null);
   const input = useRef<TextInput>(null);
   const run = useRef(0); // bumped by cancel() so a late reply from a cancelled request is ignored
@@ -320,11 +322,11 @@ export default function App() {
   const pending = last?.role === "assistant" && last.questions.length > 0 && !busy ? last : null;
 
   // Read after mount: the web build also renders on the server, where there's no stored count.
-  useEffect(() => setUsed(usedToday()), []);
+  useEffect(() => setUsed(usedToday(uid)), [uid]);
 
   // A new diagnosis takes one of today's free uses; its questions and follow-ups don't count.
   function limitReached() {
-    const n = usedToday(); // fresh, so a new day frees up uses even if the app stayed open
+    const n = usedToday(uid); // fresh, so a new day frees up uses even if the app stayed open
     setUsed(n);
     if (n < DAILY_LIMIT) return false;
     setError(`You've used today's ${DAILY_LIMIT} free diagnoses. Come back tomorrow.`);
@@ -490,7 +492,7 @@ export default function App() {
       const data = await r.json();
       if (!r.ok) throw new Error(data.error);
       if (id !== run.current) return;
-      if (!turns.length) setUsed(recordUse()); // counted once the AI answers, so a failed request doesn't cost a use
+      if (!turns.length) setUsed(recordUse(uid)); // counted once the AI answers, so a failed request doesn't cost a use
       const seconds = Math.max(1, Math.round((Date.now() - sentAt) / 1000));
       if (pending && answers) {
         // Fast replies (~1.5s) would flash the screen by before its checklist animation plays.
@@ -625,7 +627,7 @@ export default function App() {
             onSignOut={leave}
             onErase={() => {
               cancelReminders();
-              resetUsage();
+              resetUsage(uid);
               setUsed(0);
               save(SETTINGS_KEY, "{}");
               setSettings(DEFAULT_SETTINGS);
@@ -1505,11 +1507,31 @@ function Profile({
   const [page, setPage] = useState<ProfilePage | null>(null);
   const [note, setNote] = useState("");
   const [confirmErase, setConfirmErase] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [delPassword, setDelPassword] = useState("");
+  const [delError, setDelError] = useState("");
   const back = () => {
     setPage(null);
     setConfirmErase(false);
+    setConfirmDelete(false);
+    setDelPassword("");
+    setDelError("");
     setNote("");
   };
+
+  // Deletes the Firebase account, then this device's data (the account holds nothing else).
+  async function removeAccount() {
+    if (!user) return;
+    setDelError("");
+    setDeleting(true);
+    try {
+      if (await deleteAccount(user, delPassword)) return onErase();
+    } catch (e) {
+      setDelError(authMessage(e));
+    }
+    setDeleting(false);
+  }
   const stats = [
     { n: gadgetCount, label: "Gadgets" },
     { n: checkCount, label: "Checks" },
@@ -1641,6 +1663,40 @@ function Profile({
         <Text style={[s.msgText, s.dim, s.pHint]}>
           Erasing removes your name, settings and daily count from this device and signs you out. Your account stays.
         </Text>
+        {user && (
+          <>
+            {confirmDelete && !isGoogleUser(user) && (
+              <Field
+                label="Type your password to confirm"
+                value={delPassword}
+                onChangeText={setDelPassword}
+                placeholder="Your password"
+                secureTextEntry
+                autoComplete="current-password"
+                textContentType="password"
+                onSubmitEditing={removeAccount}
+              />
+            )}
+            <Pressable
+              onPress={() => (confirmDelete ? removeAccount() : setConfirmDelete(true))}
+              disabled={deleting}
+              style={[s.googleBtn, s.pSignOut, deleting && s.disabled]}
+              accessibilityRole="button"
+            >
+              <Feather name="user-x" size={18} color="#dc2626" />
+              <Text style={[s.googleText, s.pSignOutText]}>
+                {deleting ? "Deleting account…" : confirmDelete ? "Delete my account for good" : "Delete account"}
+              </Text>
+            </Pressable>
+            {!!delError && <Text style={s.error}>{delError}</Text>}
+            <Text style={[s.msgText, s.dim, s.pHint]}>
+              {confirmDelete && isGoogleUser(user)
+                ? "Google will ask you to pick your account once more to confirm it's you. "
+                : ""}
+              Deleting removes your account{user.email ? ` (${user.email})` : ""} and everything on this device. It can't be undone.
+            </Text>
+          </>
+        )}
       </SubPage>
     );
   }
