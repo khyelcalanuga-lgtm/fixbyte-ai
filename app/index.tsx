@@ -720,7 +720,7 @@ export default function App() {
             }}
           />
         ) : result && showShops ? (
-          <Shops t={result} region={settings.region} onBack={() => setShowShops(false)} />
+          <Shops t={result} region={settings.region} onBack={() => setShowShops(false)} onGadgets={() => setTab("gadgets")} />
         ) : (
           <KeyboardAvoidingView style={s.flex} behavior="padding">
             {home && !result && <DotGlow />}
@@ -728,6 +728,7 @@ export default function App() {
               <Result
                 t={result}
                 onBack={() => setResultIdx(null)}
+                onGadgets={() => setTab("gadgets")}
                 top={
                   filing && filing.turn === resultIdx ? (
                     <FileCheck
@@ -878,7 +879,7 @@ export default function App() {
                 </>
               ) : (
                 <>
-                  {!result && <Usage used={used} error={usageError} />}
+                  {!result && <Usage used={used} error={usageError} upgrade={home} />}
                   {forGadget && !result && (
                     <View style={s.forTag}>
                       <Feather name={kindIcon(forGadget.kind)} size={16} color={tone("#000")} />
@@ -2985,7 +2986,7 @@ function TileMap({ you, center, shops, route, onDrag }: { you?: Point; center: P
 
 const NEEDS = { "Pro repair": "Needs a pro", "Some skill": "Some skill", "Beginner-safe": "Beginner-safe" } as const;
 
-function Shops({ t, region, onBack }: { t: Extract<Turn, { role: "assistant" }>; region: string; onBack: () => void }) {
+function Shops({ t, region, onBack, onGadgets }: { t: Extract<Turn, { role: "assistant" }>; region: string; onBack: () => void; onGadgets: () => void }) {
   const d = t.diagnosis!;
   const [loc, setLoc] = useState<Point | null>(null);
   const [area, setArea] = useState<{ city?: string; region?: string }>({});
@@ -3080,9 +3081,9 @@ function Shops({ t, region, onBack }: { t: Extract<Turn, { role: "assistant" }>;
           <Feather name="arrow-left" size={20} color={tone("#000")} />
         </Pressable>
         <Text style={s.title}>Repair Shops</Text>
-        <View style={s.circle} accessibilityLabel={t.device}>
+        <Pressable onPress={onGadgets} style={s.circle} accessibilityLabel="My gadgets" accessibilityRole="button">
           <Feather name={icon} size={20} color={tone("#000")} />
-        </View>
+        </Pressable>
       </View>
 
       <ScrollView ref={scroll} style={s.flex} contentContainerStyle={s.result} keyboardShouldPersistTaps="handled" scrollEnabled={!dragging}>
@@ -3224,16 +3225,49 @@ function Shops({ t, region, onBack }: { t: Extract<Turn, { role: "assistant" }>;
   );
 }
 
-// Today's free diagnoses, shown above the input bar: a green pip for each one left.
-function Usage({ used, error }: { used: number | null; error: boolean }) {
+// Keep the allowance secondary to the composer, with one segment per diagnosis left.
+function Usage({ used, error, upgrade }: { used: number | null; error: boolean; upgrade?: boolean }) {
+  const [showUpgradeInfo, setShowUpgradeInfo] = useState(false);
   const left = used === null ? 0 : Math.max(0, DAILY_LIMIT - used);
-  const label = error ? "DAILY LIMIT UNAVAILABLE" : used === null ? "SYNCING DAILY LIMIT" : left ? `${left} OF ${DAILY_LIMIT} DIAGNOSES LEFT TODAY` : "LIMIT REACHED · RESETS AT MIDNIGHT UTC";
+  const ready = !error && used !== null;
+  const label = error ? "Daily allowance unavailable. Check your connection." : used === null ? "Syncing daily allowance." : `${left} of ${DAILY_LIMIT} free diagnoses left today.${left === 0 ? " Your allowance renews daily." : ""}`;
   return (
-    <View style={s.usage} accessibilityLabel={label.toLowerCase()}>
-      {Array.from({ length: DAILY_LIMIT }, (_, i) => (
-        <View key={i} style={[s.usagePip, i < left && s.usagePipOn]} />
-      ))}
-      <Text style={[s.monoLabel, s.usageText]}>{label}</Text>
+    <View style={s.usage}>
+      <View style={s.usageHeading}>
+        <View style={s.usageSummary} accessible accessibilityLabel={label} accessibilityLiveRegion="polite">
+          <Text style={s.usageTitle}>Today's diagnoses</Text>
+          {ready ? (
+            <Text style={[s.usageCount, left === 0 && s.usageEmpty]}>
+              {left}<Text style={s.usageTotal}> / {DAILY_LIMIT} left</Text>
+            </Text>
+          ) : (
+            <Text style={s.usageTotal}>{error ? "Unavailable" : "Syncing…"}</Text>
+          )}
+        </View>
+        {upgrade && (
+          <Pressable
+            onPress={() => setShowUpgradeInfo((shown) => !shown)}
+            style={s.usageUpgrade}
+            accessibilityRole="button"
+            accessibilityLabel="Upgrade"
+            accessibilityState={{ expanded: showUpgradeInfo }}
+            aria-expanded={showUpgradeInfo}
+          >
+            <Text style={s.usageUpgradeText}>Upgrade</Text>
+            <Feather name="arrow-up-right" size={13} color={tone("#000")} />
+          </Pressable>
+        )}
+      </View>
+      <View style={s.usageMeter} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+        {Array.from({ length: DAILY_LIMIT }, (_, i) => (
+          <View key={i} style={[s.usageSegment, ready && i < left && s.usageSegmentOn]} />
+        ))}
+      </View>
+      {showUpgradeInfo ? (
+        <Text style={s.usageNote} accessibilityLiveRegion="polite">Paid plans are coming soon. Your free diagnoses renew daily.</Text>
+      ) : ready && left === 0 ? (
+        <Text style={s.usageNote}>Your free diagnoses renew daily.</Text>
+      ) : null}
     </View>
   );
 }
@@ -3317,7 +3351,7 @@ function AskFixed({ gadget, onAnswer }: { gadget?: string; onAnswer: (fixed: boo
 }
 
 // `top` is a card shown above the verdict: "Save to My gadgets?" or "Did the repair work?".
-function Result({ t, onBack, top }: { t: Extract<Turn, { role: "assistant" }>; onBack: () => void; top?: ReactNode }) {
+function Result({ t, onBack, onGadgets, top }: { t: Extract<Turn, { role: "assistant" }>; onBack: () => void; onGadgets: () => void; top?: ReactNode }) {
   const d = t.diagnosis!;
   const cat = TAGS.category[d.category] ?? TAGS.category.Hardware;
   const diff = TAGS.difficulty[d.difficulty] ?? TAGS.difficulty["Some skill"];
@@ -3334,10 +3368,9 @@ function Result({ t, onBack, top }: { t: Extract<Turn, { role: "assistant" }>; o
         </Pressable>
         <Text style={s.title}>Diagnosis</Text>
         {pro ? (
-          // The professional page's design shows the device type here instead of Share.
-          <View style={s.circle} accessibilityLabel={t.device}>
+          <Pressable onPress={onGadgets} style={s.circle} accessibilityLabel="My gadgets" accessibilityRole="button">
             <Feather name={DEVICE_ICONS[t.deviceType ?? ""] ?? "cpu"} size={20} color={tone("#000")} />
-          </View>
+          </Pressable>
         ) : (
           <Pressable
             onPress={() => Share.share({ message: `${d.summary}${t.device ? ` (${t.device})` : ""}\n\n${t.text}` })}
@@ -4005,10 +4038,19 @@ function makeStyles() {
   error: { fontFamily: "Poppins_400Regular", color: "#dc2626", textAlign: "center", marginTop: 12 },
 
   footer: { paddingHorizontal: 20, paddingBottom: 20, paddingTop: 8 },
-  usage: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5, marginBottom: 12 },
-  usagePip: { width: 16, height: 6, borderRadius: 3, backgroundColor: surface("#DDDDDD") },
-  usagePipOn: { backgroundColor: GREEN },
-  usageText: { marginLeft: 5 },
+  usage: { marginHorizontal: 10, marginBottom: 18, gap: 8 },
+  usageHeading: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", columnGap: 12, rowGap: 4 },
+  usageSummary: { flexShrink: 1, gap: 2 },
+  usageTitle: { fontFamily: "Poppins_500Medium", fontSize: 12, lineHeight: 20, color: tone("rgba(0,0,0,0.6)") },
+  usageCount: { fontFamily: "Poppins_600SemiBold", fontSize: 16, lineHeight: 22, fontVariant: ["tabular-nums"], color: tone("#000") },
+  usageTotal: { fontFamily: "Poppins_400Regular", fontSize: 12, lineHeight: 20, color: tone("rgba(0,0,0,0.6)") },
+  usageEmpty: { color: tone("#A35F00") },
+  usageMeter: { flexDirection: "row", gap: 5 },
+  usageSegment: { flex: 1, height: 3, borderRadius: 2, backgroundColor: surface("rgba(0,0,0,0.12)") },
+  usageSegmentOn: { backgroundColor: DARK ? GREEN : "#579744" },
+  usageNote: { fontFamily: "Poppins_400Regular", fontSize: 11, lineHeight: 17, color: tone("rgba(0,0,0,0.6)") },
+  usageUpgrade: { minHeight: 44, paddingHorizontal: 14, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5, borderRadius: 100, borderWidth: 1, borderColor: tone("rgba(0,0,0,0.15)") },
+  usageUpgradeText: { fontFamily: "Poppins_500Medium", fontSize: 12, lineHeight: 20, color: tone("#000") },
   hint: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 20, textAlign: "center", color: tone("rgba(0,0,0,0.4)"), marginBottom: 12 },
   preview: { alignSelf: "flex-start", marginBottom: 8, marginLeft: 8 },
   thumb: { width: 64, height: 64, borderRadius: 14 },
