@@ -29,6 +29,16 @@ then redeploy. The local `.env` is only used by `npm start`.
 
 The server URL is public, so anyone who finds it can use the AI quota behind these keys.
 
+## Shared daily limit
+
+Signed-in accounts keep one daily diagnosis count in the Firebase project's Cloud Firestore database. Enable Firestore in project `fixbyte-ai-37deb`, then deploy [firestore.rules](firestore.rules) before installing the updated APK:
+
+```powershell
+firebase deploy --only firestore:rules --project fixbyte-ai-37deb
+```
+
+The shared count starts fresh when these rules go live and resets at midnight UTC. Install the updated APK on every device; older APKs still use their own local counts. Offline sign-in keeps a device-local count.
+
 ## Rebuild the APK
 
 Requires installed npm dependencies, a compatible JDK (Android Studio's bundled JDK is detected), and the Android SDK. Gradle may download missing build dependencies.

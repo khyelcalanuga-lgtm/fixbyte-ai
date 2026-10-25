@@ -28,6 +28,7 @@ import { BlurTargetView, BlurView } from "expo-blur";
 import { lensStyle } from "../lib/refraction";
 import { GlassView, isGlassEffectAPIAvailable, isLiquidGlassAvailable } from "expo-glass-effect";
 import { StatusBar } from "expo-status-bar";
+import * as SystemUI from "expo-system-ui";
 import * as ImagePicker from "expo-image-picker";
 import { Feather as FeatherOutline, Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Location from "expo-location";
@@ -38,7 +39,7 @@ import { Poppins_400Regular } from "@expo-google-fonts/poppins/400Regular";
 import { Poppins_500Medium } from "@expo-google-fonts/poppins/500Medium";
 import { Poppins_600SemiBold } from "@expo-google-fonts/poppins/600SemiBold";
 import { apiFetch } from "../lib/api";
-import { DAILY_LIMIT, recordUse, resetUsage, usedToday } from "../lib/usage";
+import { DAILY_LIMIT, LIMIT_MESSAGE, SYNC_MESSAGE, recordSharedUse, recordUse, resetUsage, usedToday, watchSharedUsage } from "../lib/usage";
 import { load, save } from "../lib/store";
 import { allowReminders, cancelReminders, remindLater } from "../lib/reminders";
 import { authMessage, deleteAccount, firebaseAuth, firebaseReady, googleSignIn, googleSignOut, isGoogleUser } from "../lib/auth";
@@ -176,6 +177,7 @@ type Diag = { photo: boolean; device?: string; finding?: string; software?: stri
 
 const TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 const GREEN = "#7CEB5A";
+const AMBER = "#F5A524"; // "Needs a pro": a warning, kept apart from green's "fixed"
 
 // Dark mode. Colours go through two functions by role:
 // - surface(): backgrounds. White cards turn dark grey; black surfaces (buttons, hero cards, selected chips) stay
@@ -205,9 +207,11 @@ const DARK_SURFACES: Record<string, string> = {
   "#D5E2D5": "#33402F",
   "#FFD9D2": "#43282A",
   "#FDECEC": "#3A2224",
+  "#FFF1D6": "#3A2E17", // amber tint
 };
 const DARK_INK: Record<string, string> = {
   "#000": `rgb(${INK})`,
+  "#A35F00": AMBER, // amber ink, readable on the tint in both themes
   "#E3E3E3": "#38383D", // the progress ring's track
   "#D5E2D5": "#33402F",
   "#CFCFCF": "#48484D",
@@ -258,8 +262,14 @@ export default function App() {
   const [start, setStart] = useState(true); // the start page, until it has faded out
   const [settings, setSettings] = useState(loadSettings); // name, email and preferences, saved on the device
   const scheme = useColorScheme();
+  const [mounted, setMounted] = useState(Platform.OS !== "web");
+  useEffect(() => setMounted(true), []);
   // Set before anything below renders: every component reads `s`, tone() and surface() from it.
-  applyTheme(settings.theme === "dark" || (settings.theme === "system" && scheme === "dark"));
+  const dark = mounted && (settings.theme === "dark" || (settings.theme === "system" && scheme === "dark"));
+  applyTheme(dark);
+  useEffect(() => {
+    SystemUI.setBackgroundColorAsync(dark ? "#111113" : "#F3F3F3");
+  }, [dark]);
   const updateSettings = (patch: Partial<Settings>) =>
     setSettings((cur) => {
       const next = { ...cur, ...patch };
@@ -295,8 +305,8 @@ export default function App() {
     save(historyKey, JSON.stringify(list));
   };
   const [forGadget, setForGadget] = useState<Gadget | null>(null); // "Check this gadget": the chat is about this one
-  // A finished diagnosis that matched no gadget, waiting for "Which gadget is this?".
-  const [filing, setFiling] = useState<{ turn: number; check: Omit<Check, "id" | "gadget">; device?: string; kind: string } | null>(null);
+  // A saved diagnosis that matched no gadget, waiting for "Which gadget is this?".
+  const [filing, setFiling] = useState<{ turn: number; id: string; device?: string; kind: string } | null>(null);
   const [askFixed, setAskFixed] = useState<string | null>(null); // check id for "Did the repair work?"
   const [authMode, setAuthMode] = useState<AuthMode | null>(null); // Sign in / Create account, opened from Welcome
   const [setup, setSetup] = useState(false); // the new-account questions, shown once after Create account
@@ -311,7 +321,8 @@ export default function App() {
   const [resultIdx, setResultIdx] = useState<number | null>(null); // turn shown on the Diagnosis page
   const [guideStep, setGuideStep] = useState<number | null>(null); // Repair Guide step on screen, null = closed
   const [showShops, setShowShops] = useState(false); // Repair Shops page, opened from "Find a repair shop"
-  const [used, setUsed] = useState(0); // diagnoses started today, by this account
+  const [used, setUsed] = useState<number | null>(null); // null until a signed-in account's shared count loads
+  const [usageError, setUsageError] = useState(false);
   const uid = user?.uid ?? "offline";
   const scroll = useRef<ComponentRef<typeof ScrollView>>(null);
   const input = useRef<ComponentRef<typeof TextInput>>(null);
@@ -322,14 +333,30 @@ export default function App() {
   const pending = last?.role === "assistant" && last.questions.length > 0 && !busy ? last : null;
 
   // Read after mount: the web build also renders on the server, where there's no stored count.
-  useEffect(() => setUsed(usedToday(uid)), [uid]);
+  useEffect(() => {
+    setUsageError(false);
+    if (!user) return void setUsed(usedToday(uid));
+    setUsed(null);
+    return watchSharedUsage(uid, (count) => {
+      setUsed(count);
+      setUsageError(false);
+    }, () => {
+      setUsed(null);
+      setUsageError(true);
+      setError(SYNC_MESSAGE);
+    });
+  }, [uid]);
 
   // A new diagnosis takes one of today's free uses; its questions and follow-ups don't count.
   function limitReached() {
-    const n = usedToday(uid); // fresh, so a new day frees up uses even if the app stayed open
-    setUsed(n);
+    const n = user ? used : usedToday(uid); // shared account count updates live; offline count resets at local midnight
+    if (!user) setUsed(n);
+    if (n === null) {
+      setError(SYNC_MESSAGE);
+      return true;
+    }
     if (n < DAILY_LIMIT) return false;
-    setError(`You've used today's ${DAILY_LIMIT} free diagnoses. Come back tomorrow.`);
+    setError(LIMIT_MESSAGE);
     return true;
   }
 
@@ -367,11 +394,17 @@ export default function App() {
     if (url) setImage(url);
   }
 
-  // Saves a finished diagnosis as a check on a gadget, and remembers it on the verdict turn.
-  function fileCheck(turn: number, gadget: string, check: Omit<Check, "id" | "gadget">, list = history) {
+  // Save every finished diagnosis, even before its gadget is chosen, so a skipped prompt does not lose the check.
+  function fileCheck(turn: number, gadget: string, check: Omit<Check, "id" | "gadget">) {
     const id = Date.now().toString(36);
-    saveHistory([...list, { id, gadget, ...check }]);
+    saveHistory([...history, { id, gadget, ...check }]);
     setTurns((ts) => ts.map((t, i) => (i === turn && t.role === "assistant" ? { ...t, check: id } : t)));
+    return id;
+  }
+
+  function attachCheck(id: string, gadget: string) {
+    if (!history.some((c) => c.id === id)) throw new Error("Cannot attach a gadget to a missing history check");
+    saveHistory(history.map((c) => (c.id === id ? { ...c, gadget } : c)));
     setFiling(null);
   }
 
@@ -492,7 +525,8 @@ export default function App() {
       const data = await r.json();
       if (!r.ok) throw new Error(data.error);
       if (id !== run.current) return;
-      if (!turns.length) setUsed(recordUse(uid)); // counted once the AI answers, so a failed request doesn't cost a use
+      if (!turns.length) setUsed(user ? await recordSharedUse(uid) : recordUse(uid)); // failed replies do not cost a use
+      if (id !== run.current) return;
       const seconds = Math.max(1, Math.round((Date.now() - sentAt) / 1000));
       if (pending && answers) {
         // Fast replies (~1.5s) would flash the screen by before its checklist animation plays.
@@ -532,8 +566,8 @@ export default function App() {
         };
         // The gadget picked with "Check this gadget", else the one the AI's device name matches; otherwise ask.
         const target = forGadget ?? matchGadget(gadgets, data.device);
-        if (target) fileCheck(next.length, target.id, check);
-        else setFiling({ turn: next.length, check, device: data.device, kind: KIND_FROM_AI[data.deviceType ?? ""] ?? "Phone" });
+        const checkId = fileCheck(next.length, target?.id ?? "", check);
+        if (!target) setFiling({ turn: next.length, id: checkId, device: data.device, kind: KIND_FROM_AI[data.deviceType ?? ""] ?? "Phone" });
       }
     } catch (err) {
       if (id !== run.current) return; // cancelled; cancel() already restored the screen
@@ -565,7 +599,7 @@ export default function App() {
   if (!fontsLoaded || user === undefined) return <StartPage />;
 
   const home = turns.length === 0 && !busy;
-  const out = home && used >= DAILY_LIMIT;
+  const out = home && used !== null && used >= DAILY_LIMIT;
   const time = startedAt?.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }).toUpperCase();
   const shown = resultIdx === null ? undefined : turns[resultIdx];
   const result = shown?.role === "assistant" && shown.diagnosis ? shown : undefined;
@@ -628,7 +662,7 @@ export default function App() {
             onErase={() => {
               cancelReminders();
               resetUsage(uid);
-              setUsed(0);
+              if (!user) setUsed(0);
               save(SETTINGS_KEY, "{}");
               setSettings(DEFAULT_SETTINGS);
               saveGadgets([]);
@@ -663,11 +697,11 @@ export default function App() {
                     <FileCheck
                       device={filing.device}
                       gadgets={gadgets}
-                      onPick={(g) => fileCheck(filing.turn, g.id, filing.check)}
+                      onPick={(g) => attachCheck(filing.id, g.id)}
                       onAdd={() => {
                         const g = newGadget(filing.device || "My device", filing.kind);
+                        attachCheck(filing.id, g.id);
                         saveGadgets([g, ...gadgets]);
-                        fileCheck(filing.turn, g.id, filing.check);
                       }}
                       onSkip={() => setFiling(null)}
                     />
@@ -809,7 +843,7 @@ export default function App() {
                 </>
               ) : (
                 <>
-                  {!result && <Usage used={used} />}
+                  {!result && <Usage used={used} error={usageError} />}
                   {forGadget && !result && (
                     <View style={s.forTag}>
                       <Feather name={kindIcon(forGadget.kind)} size={16} color={tone("#000")} />
@@ -1055,12 +1089,12 @@ const newGadget = (name: string, kind: string): Gadget => ({
   added: new Date().toISOString(),
 });
 
-// Status colours carry meaning: green = fixed, black = needs a pro, grey = checked or new.
+// Status colours carry meaning: green = fixed, amber = needs a pro, grey = checked or new.
 // Raw light-mode colours, themed where drawn (this table is built once, at load). fg on green stays black.
 const STATUS_PILL: Record<CheckStatus | "new", { label: string; icon?: FeatherName; bg: string; fg: string }> = {
   fixed: { label: "Fixed", icon: "check", bg: GREEN, fg: ON_ACCENT },
   checked: { label: "Checked", bg: "#EDEDED", fg: "#000" },
-  pro: { label: "Needs a pro", icon: "alert-triangle", bg: "#000", fg: "#fff" },
+  pro: { label: "Needs a pro", icon: "alert-triangle", bg: "#FFF1D6", fg: "#A35F00" },
   new: { label: "New", bg: "#F3F3F3", fg: "rgba(0,0,0,0.55)" },
 };
 
@@ -1456,7 +1490,7 @@ type Doc = { heading: string; body: string }[];
 const HELP: Doc = [
   { heading: "How does FixByte AI diagnose a problem?", body: "Send a photo or describe what happened. The AI asks 1-3 quick questions, then gives the likely cause, how hard the fix is, and step-by-step repair guidance." },
   { heading: "Is the diagnosis always right?", body: "No. It's a best guess from what you share. For anything risky, like a swollen battery, mains power or water damage, stop and see a professional." },
-  { heading: "Why is there a daily limit?", body: `You get ${DAILY_LIMIT} free diagnoses a day. The count resets at midnight.` },
+  { heading: "Why is there a daily limit?", body: `You get ${DAILY_LIMIT} free diagnoses a day. Signed-in accounts share one count across devices, resetting at midnight UTC.` },
   { heading: "How are repair shops found?", body: "From OpenStreetMap, within 8 km of you, or of your Region when location is off. Opening hours and phone numbers come from OpenStreetMap and can be missing or out of date." },
   { heading: "What do repair reminders do?", body: "Two days after a diagnosis, your phone reminds you to check how the repair went. Turn them off anytime with the Repair reminders switch." },
   { heading: "What does Language change?", body: "The language the AI writes its answers in. The app's own buttons and labels stay in English." },
@@ -1464,7 +1498,7 @@ const HELP: Doc = [
 const PRIVACY: Doc = [
   { heading: "What you send", body: "Photos and descriptions you send go through FixByte's server to an AI provider (Google Gemini, Groq, Mistral or OpenRouter) to produce your diagnosis. FixByte's server doesn't keep them; each provider handles them under its own privacy policy." },
   { heading: "Your location", body: "Used only to find nearby repair shops and directions. Shop searches go through FixByte's server to OpenStreetMap services, and directions come from OpenStreetMap's routing service. Your location isn't stored." },
-  { heading: "On your device", body: "Your name, email, settings and daily diagnosis count are saved on this device only. Erase them anytime under Password and security." },
+  { heading: "On your device", body: "Your name, email and settings are saved on this device. Signed-in daily diagnosis counts are saved in Firebase to sync across devices." },
   { heading: "What we don't do", body: "No ads, no tracking, and your data isn't sold." },
   { heading: "Contact", body: `Questions about your privacy: ${SUPPORT_EMAIL}` },
 ];
@@ -1482,7 +1516,7 @@ const THEMES: { value: Settings["theme"]; label: string; short: string }[] = [
   { value: "light", label: "Light", short: "Light" },
   { value: "dark", label: "Dark", short: "Dark" },
 ];
-type Row = { icon: FeatherName; label: string; value?: string; onPress: () => void };
+type Row = { icon: FeatherName; label: string; value?: string; onPress: () => void; line?: boolean }; // line: divider above
 
 // Profile: who's signed in, totals from the gadgets and history, settings and support pages.
 function Profile({
@@ -1535,7 +1569,7 @@ function Profile({
   const stats = [
     { n: gadgetCount, label: "Gadgets" },
     { n: checkCount, label: "Checks" },
-    { n: fixedCount, label: "Fixed Yourself" },
+    { n: fixedCount, label: "Fixed yourself" },
   ];
 
   async function setReminders(on: boolean) {
@@ -1661,7 +1695,7 @@ function Profile({
           <Text style={[s.googleText, s.pSignOutText]}>{confirmErase ? "Tap again to erase" : "Erase data on this device"}</Text>
         </Pressable>
         <Text style={[s.msgText, s.dim, s.pHint]}>
-          Erasing removes your name, settings and daily count from this device and signs you out. Your account stays.
+          Erasing removes your name and settings from this device and signs you out. Your account and its shared daily count stay.
         </Text>
         {user && (
           <>
@@ -1742,69 +1776,91 @@ function Profile({
     { icon: "moon", label: "Appearance", value: THEMES.find((t) => t.value === settings.theme)?.short, onPress: () => setPage("appearance") },
     { icon: "globe", label: "Language", value: settings.language, onPress: () => setPage("language") },
     { icon: "map-pin", label: "Region", value: settings.region, onPress: () => setPage("region") },
-    { icon: "lock", label: "Password and security", onPress: () => setPage("security") },
   ];
   const supportRows: Row[] = [
     { icon: "help-circle", label: "Help & FAQ", onPress: () => setPage("help") },
     { icon: "message-square", label: "Send feedback", onPress: feedback },
     { icon: "shield", label: "Privacy policy", onPress: () => setPage("privacy") },
     { icon: "file-text", label: "Terms of service", onPress: () => setPage("terms") },
-    { icon: "info", label: "About", value: `Version ${VERSION}`, onPress: () => setPage("about") },
+    { icon: "info", label: "About", value: `v${VERSION}`, onPress: () => setPage("about") },
   ];
+  const how = !user ? "Saved on this device" : isGoogleUser(user) ? "Signed in with Google" : "Signed in with email";
 
   return (
     <View style={s.flex}>
-      <ScrollView style={s.flex} contentContainerStyle={[s.gList, s.pPage]}>
-        <Text style={[s.gTitle, s.pTitle]}>Profile</Text>
+      <View style={s.gHeader}>
+        <View style={s.flex}>
+          <Text style={s.gTitle}>Profile</Text>
+          <Text style={s.gCount}>{how}</Text>
+        </View>
+      </View>
 
+      <ScrollView style={s.flex} contentContainerStyle={s.gList}>
+        {/* Who you are (tap to edit), then what you've done. */}
         <View style={s.pCard}>
-          <View style={[s.pAvatar, s.pAvatarCenter]}>
-            <Text style={s.pAvatarText}>{initial(settings)}</Text>
-          </View>
-          <View style={s.gText}>
-            <Text style={[s.pName, !settings.name.trim() && s.dim]} numberOfLines={1}>
-              {settings.name.trim() || "Add your name"}
-            </Text>
-            <Text style={s.pEmail} numberOfLines={1}>
-              {settings.email}
-            </Text>
-          </View>
-          <Pressable onPress={() => setPage("edit")} style={s.pEdit} hitSlop={8} accessibilityLabel="Edit profile">
-            <Feather name="edit-2" size={21} color={tone("#000")} />
-          </Pressable>
-        </View>
-
-        <View style={s.pStats}>
-          {stats.map((st) => (
-            <View key={st.label} style={s.pStat}>
-              <Text style={s.pStatNum}>{st.n}</Text>
-              <Text style={s.pStatLabel}>{st.label}</Text>
+          <Pressable onPress={() => setPage("edit")} style={s.gTop} accessibilityRole="button" accessibilityLabel="Edit profile">
+            <View style={[s.pAvatar, s.pAvatarCenter]}>
+              <Text style={s.pAvatarText}>{initial(settings)}</Text>
             </View>
-          ))}
+            <View style={s.gText}>
+              <Text style={[s.pName, !settings.name.trim() && s.dim]} numberOfLines={1}>
+                {settings.name.trim() || "Add your name"}
+              </Text>
+              <Text style={s.pEmail} numberOfLines={1}>
+                {settings.email || "No email yet"}
+              </Text>
+            </View>
+            <View style={s.pEdit}>
+              <Text style={s.pEditText}>Edit</Text>
+            </View>
+          </Pressable>
+          <View style={s.pStats}>
+            {stats.map((st, i) => (
+              <View key={st.label} style={[s.pStat, i > 0 && s.pStatLine]}>
+                <Text style={s.pStatNum}>{st.n}</Text>
+                <Text style={s.pStatLabel} numberOfLines={1}>
+                  {st.label}
+                </Text>
+              </View>
+            ))}
+          </View>
         </View>
 
+        <Text style={[s.monoLabel, s.pSection]}>PREFERENCES</Text>
         <View style={s.pSettings}>
           <View style={s.pRow}>
-            <Feather name="bell" size={20} color={tone("#000")} />
-            <Text style={s.pRowLabel}>Repair reminders</Text>
+            <View style={s.pIcon}>
+              <Feather name="bell" size={17} color={tone("#000")} />
+            </View>
+            <View style={s.flex}>
+              <Text style={s.pRowLabel}>Repair reminders</Text>
+              <Text style={s.pRowSub}>A check-in 2 days after each diagnosis</Text>
+            </View>
             <Toggle on={settings.reminders} onChange={setReminders} label="Repair reminders" />
           </View>
           {settingRows.map((row) => (
-            <SettingRow key={row.label} {...row} />
+            <SettingRow key={row.label} {...row} line />
           ))}
         </View>
         {!!note && <Text style={[s.msgText, s.dim, s.pHint]}>{note}</Text>}
 
+        <Text style={[s.monoLabel, s.pSection]}>ACCOUNT</Text>
         <View style={s.pSettings}>
-          {supportRows.map((row) => (
-            <SettingRow key={row.label} {...row} />
-          ))}
+          <SettingRow icon="lock" label="Password and security" onPress={() => setPage("security")} />
+          <Pressable onPress={onSignOut} style={[s.pRow, s.pLine]} accessibilityRole="button">
+            <View style={[s.pIcon, s.pIconDanger]}>
+              <Feather name="log-out" size={17} color="#dc2626" />
+            </View>
+            <Text style={[s.pRowLabel, s.pSignOutText]}>Sign out</Text>
+          </Pressable>
         </View>
 
-        <Pressable onPress={onSignOut} style={[s.googleBtn, s.pSignOut]} accessibilityRole="button">
-          <Feather name="log-out" size={18} color="#dc2626" />
-          <Text style={[s.googleText, s.pSignOutText]}>Sign out</Text>
-        </Pressable>
+        <Text style={[s.monoLabel, s.pSection]}>SUPPORT</Text>
+        <View style={s.pSettings}>
+          {supportRows.map((row, i) => (
+            <SettingRow key={row.label} {...row} line={i > 0} />
+          ))}
+        </View>
       </ScrollView>
     </View>
   );
@@ -1870,13 +1926,19 @@ function EditProfile({
   );
 }
 
-function SettingRow({ icon, label, value, onPress }: Row) {
+function SettingRow({ icon, label, value, onPress, line }: Row) {
   return (
-    <Pressable onPress={onPress} style={s.pRow} accessibilityRole="button">
-      <Feather name={icon} size={20} color={tone("#000")} />
+    <Pressable onPress={onPress} style={[s.pRow, line && s.pLine]} accessibilityRole="button">
+      <View style={s.pIcon}>
+        <Feather name={icon} size={17} color={tone("#000")} />
+      </View>
       <Text style={s.pRowLabel}>{label}</Text>
-      {value && <Text style={s.pRowValue}>{value}</Text>}
-      <Feather name="chevron-right" size={18} color={tone("rgba(0,0,0,0.6)")} />
+      {value && (
+        <Text style={s.pRowValue} numberOfLines={1}>
+          {value}
+        </Text>
+      )}
+      <Feather name="chevron-right" size={18} color={tone("rgba(0,0,0,0.35)")} />
     </Pressable>
   );
 }
@@ -1904,20 +1966,20 @@ type CheckStatus = "fixed" | "checked" | "pro";
 type Check = { id: string; gadget: string; date: string; title: string; detail: string; status: CheckStatus }; // date: YYYY-MM-DD
 const HISTORY_KEY = "history";
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-const WEEKDAYS = ["S", "M", "T", "W", "TH", "F", "S"];
+const WEEKDAYS = ["S", "M", "T", "W", "T", "F", "S"];
 const ymd = (y: number, m: number, d: number) => `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
 
 function StatusDot({ status, big }: { status: CheckStatus; big?: boolean }) {
   return <View style={[s.dot, big && s.dotBig, status === "fixed" ? s.dotFixed : status === "checked" ? s.dotChecked : s.dotPro]} />;
 }
 
-// History, all gadgets at once by default: a month card (summary tiles + calendar to pick a day) above a timeline
-// of checks grouped by day, newest first. Tapping a check offers Mark as fixed and Remove.
-// Raw light-mode colours, themed where drawn (this table is built once, at load). fg on green stays black.
+// History, all gadgets at once by default: a month card (calendar to pick a day, with a legend that counts the
+// month) above a timeline of checks grouped by day, newest first. Tapping a check offers Mark as fixed and Remove.
+// Same colours as the gadget pills; the legend order is the order a repair moves through.
 const STATUS_BADGE: Record<CheckStatus, { label: string; icon: FeatherName; bg: string; fg: string }> = {
-  fixed: { label: "Fixed", icon: "check", bg: GREEN, fg: ON_ACCENT },
   checked: { label: "Checked", icon: "search", bg: "#F3F3F3", fg: "#000" },
-  pro: { label: "Needs a pro", icon: "alert-triangle", bg: "#000", fg: GREEN },
+  pro: { label: "Needs a pro", icon: "alert-triangle", bg: "#FFF1D6", fg: "#A35F00" },
+  fixed: { label: "Fixed", icon: "check", bg: GREEN, fg: ON_ACCENT },
 };
 const parseDay = (d: string) => new Date(`${d}T00:00:00`);
 
@@ -2054,27 +2116,14 @@ function History({
             <View style={s.hCal}>
               <View style={s.hMonthRow}>
                 <Text style={s.hMonth}>
-                  {MONTHS[view.m]} {view.y}
+                  {MONTHS[view.m]} <Text style={s.hxYear}>{view.y}</Text>
                 </Text>
                 <Pressable onPress={() => move(-1)} style={s.hxNav} hitSlop={6} accessibilityLabel="Previous month">
-                  <Feather name="chevron-left" size={20} color={tone("#000")} />
+                  <Feather name="chevron-left" size={18} color={tone("#000")} />
                 </Pressable>
                 <Pressable onPress={() => move(1)} style={s.hxNav} hitSlop={6} accessibilityLabel="Next month">
-                  <Feather name="chevron-right" size={20} color={tone("#000")} />
+                  <Feather name="chevron-right" size={18} color={tone("#000")} />
                 </Pressable>
-              </View>
-
-              {/* The month in three numbers; their dots double as the calendar's legend. */}
-              <View style={s.hxStats}>
-                {(["checked", "fixed", "pro"] as const).map((st) => (
-                  <View key={st} style={s.hxStat}>
-                    <Text style={s.hxStatNum}>{st === "checked" ? monthChecks.length : count(st)}</Text>
-                    <View style={s.hxStatRow}>
-                      {st !== "checked" && <StatusDot status={st} />}
-                      <Text style={s.hxStatLabel}>{st === "checked" ? "Checks" : STATUS_BADGE[st].label}</Text>
-                    </View>
-                  </View>
-                ))}
               </View>
 
               <View style={s.hWeek}>
@@ -2103,7 +2152,7 @@ function History({
                         accessibilityState={{ selected }}
                       >
                         <View style={[s.hDay, isToday && s.hToday, selected && s.hSelected]}>
-                          <Text style={[s.hDayText, !status && s.hxDayQuiet, selected && s.tagTextLight]}>{d}</Text>
+                          <Text style={[s.hDayText, status ? s.hxDayBusy : s.hxDayQuiet, isToday && s.hxDayBusy, selected && s.tagTextLight]}>{d}</Text>
                         </View>
                         {status && (
                           <View style={s.hDayDot}>
@@ -2115,22 +2164,38 @@ function History({
                   })}
                 </View>
               ))}
+
+              {/* The month in numbers; each dot is the calendar's key for that status. */}
+              <View style={s.hxLegend}>
+                {(Object.keys(STATUS_BADGE) as CheckStatus[]).map((st) => (
+                  <View key={st} style={s.hxLegendItem}>
+                    <StatusDot status={st} />
+                    <Text style={s.hxLegendNum}>{count(st)}</Text>
+                    <Text style={s.hxLegendText} numberOfLines={1}>
+                      {STATUS_BADGE[st].label.toLowerCase()}
+                    </Text>
+                  </View>
+                ))}
+              </View>
             </View>
 
             {day !== null && (
-              <View style={s.hxShowing}>
-                <Text style={s.hxShowingText}>
-                  Showing {MONTHS[view.m].slice(0, 3)} {day}
+              <Pressable onPress={() => setDay(null)} style={s.hxDayChip} accessibilityRole="button" accessibilityLabel="Show the whole month">
+                <Text style={s.hxDayChipText}>
+                  {MONTHS[view.m].slice(0, 3)} {day}
                 </Text>
-                <Pressable onPress={() => setDay(null)} hitSlop={8} accessibilityRole="button">
-                  <Text style={s.hxShowAll}>Show all</Text>
-                </Pressable>
-              </View>
+                <Feather name="x" size={14} color={tone("#fff")} />
+              </Pressable>
             )}
 
             {groups.map((grp) => (
               <View key={grp.date}>
-                <Text style={[s.monoLabel, s.hxDayHead]}>{dayLabel(grp.date).toUpperCase()}</Text>
+                <View style={s.hxDayHead}>
+                  <Text style={s.monoLabel}>{dayLabel(grp.date).toUpperCase()}</Text>
+                  <Text style={s.monoLabel}>
+                    {grp.items.length} CHECK{grp.items.length === 1 ? "" : "S"}
+                  </Text>
+                </View>
                 {grp.items.map((c) => {
                   const b = STATUS_BADGE[c.status];
                   const g = gadgets.find((x) => x.id === c.gadget);
@@ -2142,18 +2207,26 @@ function History({
                           <Feather name={b.icon} size={18} color={tone(b.fg)} />
                         </View>
                         <View style={s.gText}>
-                          <Text style={s.hxTitle} numberOfLines={2}>
-                            {c.title}
-                          </Text>
+                          <View style={s.hxTitleRow}>
+                            <Text style={[s.hxTitle, s.flex]} numberOfLines={2}>
+                              {c.title}
+                            </Text>
+                            <Feather name={isOpen ? "chevron-up" : "chevron-down"} size={18} color={tone("rgba(0,0,0,0.35)")} />
+                          </View>
                           <Text style={s.hxDetail} numberOfLines={2}>
                             {c.detail}
                           </Text>
-                          <View style={s.hxMeta}>
-                            {g && <Feather name={kindIcon(g.kind)} size={13} color={tone("rgba(0,0,0,0.45)")} />}
-                            <Text style={s.hxMetaText} numberOfLines={1}>
-                              {g ? g.name : "Removed gadget"} · {b.label}
-                            </Text>
-                          </View>
+                        </View>
+                      </View>
+                      <View style={s.hxFoot}>
+                        <View style={s.hxMeta}>
+                          <Feather name={g ? kindIcon(g.kind) : "help-circle"} size={14} color={tone("rgba(0,0,0,0.45)")} />
+                          <Text style={s.hxMetaText} numberOfLines={1}>
+                            {g ? g.name : c.gadget ? "Removed gadget" : "Unassigned device"}
+                          </Text>
+                        </View>
+                        <View style={[s.hxPill, { backgroundColor: surface(b.bg) }]}>
+                          <Text style={[s.hxPillText, { color: tone(b.fg) }]}>{b.label}</Text>
                         </View>
                       </View>
                       {isOpen && (
@@ -3004,9 +3077,9 @@ function Shops({ t, region, onBack }: { t: Extract<Turn, { role: "assistant" }>;
 }
 
 // Today's free diagnoses, shown above the input bar: a green pip for each one left.
-function Usage({ used }: { used: number }) {
-  const left = Math.max(0, DAILY_LIMIT - used);
-  const label = left ? `${left} OF ${DAILY_LIMIT} DIAGNOSES LEFT TODAY` : "LIMIT REACHED · RESETS AT MIDNIGHT";
+function Usage({ used, error }: { used: number | null; error: boolean }) {
+  const left = used === null ? 0 : Math.max(0, DAILY_LIMIT - used);
+  const label = error ? "DAILY LIMIT UNAVAILABLE" : used === null ? "SYNCING DAILY LIMIT" : left ? `${left} OF ${DAILY_LIMIT} DIAGNOSES LEFT TODAY` : "LIMIT REACHED · RESETS AT MIDNIGHT UTC";
   return (
     <View style={s.usage} accessibilityLabel={label.toLowerCase()}>
       {Array.from({ length: DAILY_LIMIT }, (_, i) => (
@@ -3649,24 +3722,29 @@ function makeStyles() {
   glassNative: { borderRadius: 100, overflow: "hidden" },
   glassShadow: { borderRadius: 100, shadowColor: "#000", shadowOpacity: 0.1, shadowRadius: 24, shadowOffset: { width: 0, height: 10 } },
   // Profile, measured from the mockup.
-  pPage: { paddingTop: 0 },
-  pTitle: { textAlign: "center", marginTop: 26, marginBottom: 22 },
-  pCard: { flexDirection: "row", alignItems: "center", padding: 20, borderRadius: 25, backgroundColor: surface("#fff") },
-  pAvatar: { width: 68, height: 68, borderRadius: 34, backgroundColor: surface("#D9D9D9"), marginRight: 2 },
-  pName: { fontFamily: "Poppins_600SemiBold", fontSize: 19, lineHeight: 27, color: tone("#000") },
-  pEdit: { padding: 7 },
-  pEmail: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 19, color: tone("rgba(0,0,0,0.6)") },
-  pStats: { flexDirection: "row", gap: 10, marginTop: 10 },
-  pStat: { flex: 1, alignItems: "center", paddingTop: 16, paddingBottom: 18, borderRadius: 25, backgroundColor: surface("#fff") },
-  pStatNum: { fontFamily: "Poppins_500Medium", fontSize: 34, lineHeight: 44, color: tone("#000") },
-  pStatLabel: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 18, textAlign: "center", color: tone("#000"), marginTop: 2 },
-  pSettings: { marginTop: 12, paddingHorizontal: 20, paddingVertical: 10, borderRadius: 25, backgroundColor: surface("#fff") },
-  pRow: { flexDirection: "row", alignItems: "center", height: 56, gap: 14 },
-  pRowLabel: { flex: 1, fontFamily: "Poppins_400Regular", fontSize: 16, color: tone("#000") },
-  pRowValue: { fontFamily: "Poppins_400Regular", fontSize: 15, color: tone("rgba(0,0,0,0.45)") },
+  pCard: { padding: 18, borderRadius: 25, backgroundColor: surface("#fff") },
+  pAvatar: { width: 56, height: 56, borderRadius: 28, backgroundColor: GREEN },
+  pName: { fontFamily: "Poppins_600SemiBold", fontSize: 18, lineHeight: 25, color: tone("#000") },
+  pEdit: { height: 32, paddingHorizontal: 14, marginLeft: 10, borderRadius: 100, justifyContent: "center", backgroundColor: surface("#F3F3F3") },
+  pEditText: { fontFamily: "Poppins_500Medium", fontSize: 13, color: tone("#000") },
+  pEmail: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 19, color: tone("rgba(0,0,0,0.55)") },
+  pStats: { flexDirection: "row", marginTop: 16, paddingTop: 14, borderTopWidth: 1, borderTopColor: surface("rgba(0,0,0,0.06)") },
+  pStat: { flex: 1, alignItems: "center", paddingHorizontal: 4 },
+  pStatLine: { borderLeftWidth: 1, borderLeftColor: surface("rgba(0,0,0,0.06)") },
+  pStatNum: { fontFamily: "Poppins_600SemiBold", fontSize: 22, lineHeight: 30, color: tone("#000") },
+  pStatLabel: { fontFamily: "Poppins_400Regular", fontSize: 12, lineHeight: 17, color: tone("rgba(0,0,0,0.55)") },
+  pSection: { marginTop: 24, marginBottom: -2, paddingHorizontal: 6 }, // pSettings adds its own 12 below
+  pSettings: { marginTop: 12, paddingHorizontal: 16, paddingVertical: 4, borderRadius: 25, backgroundColor: surface("#fff") },
+  pRow: { flexDirection: "row", alignItems: "center", minHeight: 58, paddingVertical: 8, gap: 14 },
+  pLine: { borderTopWidth: 1, borderTopColor: surface("rgba(0,0,0,0.06)") },
+  pIcon: { width: 34, height: 34, borderRadius: 11, alignItems: "center", justifyContent: "center", backgroundColor: surface("#F3F3F3") },
+  pIconDanger: { backgroundColor: surface("#FDECEC") },
+  pRowLabel: { flex: 1, fontFamily: "Poppins_400Regular", fontSize: 15, color: tone("#000") },
+  pRowSub: { fontFamily: "Poppins_400Regular", fontSize: 12, lineHeight: 17, color: tone("rgba(0,0,0,0.5)"), marginTop: 1 },
+  pRowValue: { flexShrink: 1, maxWidth: "40%", fontFamily: "Poppins_400Regular", fontSize: 14, color: tone("rgba(0,0,0,0.45)") },
   pSignOut: { marginTop: 10 },
   pAvatarCenter: { alignItems: "center", justifyContent: "center" },
-  pAvatarText: { fontFamily: "Poppins_600SemiBold", fontSize: 26, color: tone("rgba(0,0,0,0.45)") },
+  pAvatarText: { fontFamily: "Poppins_600SemiBold", fontSize: 22, color: ON_ACCENT },
   pHint: { marginTop: 10, marginBottom: 4, paddingHorizontal: 6 },
   pDoc: { paddingVertical: 20, gap: 4 },
   pDocItem: { gap: 4, marginBottom: 12 },
@@ -3681,43 +3759,48 @@ function makeStyles() {
   // History, measured from the mockup.
   hxFilters: { marginTop: 0, marginBottom: 12 },
   hxChip: { paddingRight: 16, gap: 6, maxWidth: 200 },
-  hxNav: { width: 36, height: 36, borderRadius: 18, backgroundColor: surface("#F3F3F3"), alignItems: "center", justifyContent: "center", marginLeft: 8 },
-  hxStats: { flexDirection: "row", gap: 8, marginBottom: 12 },
-  hxStat: { flex: 1, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 16, backgroundColor: surface("#F3F3F3") },
-  hxStatNum: { fontFamily: "Poppins_600SemiBold", fontSize: 20, lineHeight: 26, color: tone("#000") },
-  hxStatRow: { flexDirection: "row", alignItems: "center", gap: 6 },
-  hxStatLabel: { fontFamily: "Poppins_400Regular", fontSize: 12, color: tone("rgba(0,0,0,0.55)") },
-  hxDayQuiet: { color: tone("rgba(0,0,0,0.55)") },
-  hxShowing: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 14, paddingHorizontal: 6 },
-  hxShowingText: { fontFamily: "Poppins_500Medium", fontSize: 14, color: tone("#000") },
+  hxNav: { width: 34, height: 34, borderRadius: 17, backgroundColor: surface("#F3F3F3"), alignItems: "center", justifyContent: "center", marginLeft: 8 },
+  hxYear: { fontFamily: "Poppins_400Regular", color: tone("rgba(0,0,0,0.4)") },
+  hxDayQuiet: { color: tone("rgba(0,0,0,0.4)") },
+  hxDayBusy: { fontFamily: "Poppins_600SemiBold" },
+  hxLegend: { flexDirection: "row", justifyContent: "space-between", gap: 8, marginTop: 10, paddingTop: 14, borderTopWidth: 1, borderTopColor: surface("rgba(0,0,0,0.06)") },
+  hxLegendItem: { flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 1 },
+  hxLegendNum: { fontFamily: "Poppins_600SemiBold", fontSize: 13, color: tone("#000") },
+  hxLegendText: { flexShrink: 1, fontFamily: "Poppins_400Regular", fontSize: 12, color: tone("rgba(0,0,0,0.55)") },
+  hxDayChip: { flexDirection: "row", alignItems: "center", alignSelf: "flex-start", gap: 6, height: 32, marginTop: 14, paddingHorizontal: 14, borderRadius: 100, backgroundColor: surface("#000") },
+  hxDayChipText: { fontFamily: "Poppins_500Medium", fontSize: 13, color: tone("#fff") },
   hxShowAll: { fontFamily: "Poppins_600SemiBold", fontSize: 14, color: tone("#000"), textDecorationLine: "underline" },
-  hxDayHead: { marginTop: 22, marginBottom: 2, paddingHorizontal: 6 },
+  hxDayHead: { flexDirection: "row", justifyContent: "space-between", marginTop: 24, marginBottom: 2, paddingHorizontal: 6 },
   hxEntry: { marginTop: 10, padding: 16, borderRadius: 22, backgroundColor: surface("#fff") },
-  hxBadge: { width: 42, height: 42, borderRadius: 21, alignItems: "center", justifyContent: "center", alignSelf: "flex-start" },
+  hxBadge: { width: 42, height: 42, borderRadius: 14, alignItems: "center", justifyContent: "center", alignSelf: "flex-start" },
+  hxTitleRow: { flexDirection: "row", alignItems: "flex-start", gap: 8 },
   hxTitle: { fontFamily: "Poppins_600SemiBold", fontSize: 15, lineHeight: 21, color: tone("#000") },
   hxDetail: { fontFamily: "Poppins_400Regular", fontSize: 14, lineHeight: 20, color: tone("rgba(0,0,0,0.6)"), marginTop: 2 },
-  hxMeta: { flexDirection: "row", alignItems: "center", gap: 5, marginTop: 8 },
-  hxMetaText: { flexShrink: 1, fontFamily: "Poppins_500Medium", fontSize: 12, color: tone("rgba(0,0,0,0.45)") },
+  hxFoot: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 14, paddingTop: 12, borderTopWidth: 1, borderTopColor: surface("rgba(0,0,0,0.06)") },
+  hxMeta: { flex: 1, flexDirection: "row", alignItems: "center", gap: 6 },
+  hxMetaText: { flexShrink: 1, fontFamily: "Poppins_500Medium", fontSize: 12, color: tone("rgba(0,0,0,0.5)") },
+  hxPill: { height: 24, paddingHorizontal: 10, borderRadius: 100, justifyContent: "center" },
+  hxPillText: { fontFamily: "Poppins_500Medium", fontSize: 12 },
   hxActions: { flexDirection: "row", gap: 8, marginTop: 14 },
   hxAction: { flex: 1, flexDirection: "row", gap: 8, height: 46, marginTop: 0 },
   hxRemove: { flex: 0, paddingHorizontal: 18 },
   hxNone: { alignItems: "center", gap: 8, marginTop: 24 },
   hCal: { padding: 20, borderRadius: 25, backgroundColor: surface("#fff") },
-  hMonthRow: { flexDirection: "row", alignItems: "center", marginBottom: 14 },
+  hMonthRow: { flexDirection: "row", alignItems: "center", marginBottom: 8 },
   hMonth: { flex: 1, fontFamily: "Poppins_600SemiBold", fontSize: 17, color: tone("#000") },
   hWeek: { flexDirection: "row" },
-  hCell: { flex: 1, height: 44, alignItems: "center", justifyContent: "center" },
-  hWeekday: { fontFamily: "Poppins_500Medium", fontSize: 12, lineHeight: 32, textAlign: "center", color: tone("rgba(0,0,0,0.4)") },
-  hDay: { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center" },
-  hToday: { borderWidth: 1, borderColor: tone("#000") },
+  hCell: { flex: 1, height: 42, alignItems: "center", justifyContent: "center" },
+  hWeekday: { fontFamily: "Poppins_500Medium", fontSize: 11, lineHeight: 30, textAlign: "center", color: tone("rgba(0,0,0,0.35)") },
+  hDay: { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center" },
+  hToday: { backgroundColor: surface("#F3F3F3") },
   hSelected: { backgroundColor: surface("#000") },
-  hDayText: { fontFamily: "Poppins_400Regular", fontSize: 15, color: tone("#000") },
-  hDayDot: { position: "absolute", bottom: -2 }, // just under the day circle
+  hDayText: { fontFamily: "Poppins_400Regular", fontSize: 14, color: tone("#000") },
+  hDayDot: { position: "absolute", bottom: 0 }, // just under the day circle
   dot: { width: 6, height: 6, borderRadius: 3 },
   dotBig: { width: 10, height: 10, borderRadius: 5 },
   dotFixed: { backgroundColor: GREEN },
-  dotChecked: { backgroundColor: surface("#000") },
-  dotPro: { borderWidth: 1, borderColor: tone("#000"), backgroundColor: surface("#fff") },
+  dotChecked: { backgroundColor: surface("rgba(0,0,0,0.3)") },
+  dotPro: { backgroundColor: AMBER },
   // New-account questions.
   setup: { paddingHorizontal: 20, paddingTop: 26, paddingBottom: 20 },
   setupTitle: { fontFamily: "Poppins_600SemiBold", fontSize: 26, lineHeight: 34, color: tone("#000"), marginTop: 8 },

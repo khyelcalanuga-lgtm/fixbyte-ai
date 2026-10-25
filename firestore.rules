@@ -1,0 +1,25 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /dailyUsage/{uid} {
+      function owner() {
+        return request.auth != null && request.auth.uid == uid;
+      }
+      function validCount() {
+        return request.resource.data.keys().hasAll(['day', 'used'])
+          && request.resource.data.keys().hasOnly(['day', 'used'])
+          && request.resource.data.day == request.time.date()
+          && request.resource.data.used is int
+          && request.resource.data.used >= 1
+          && request.resource.data.used <= 3;
+      }
+
+      allow get: if owner();
+      allow create: if owner() && validCount() && request.resource.data.used == 1;
+      allow update: if owner() && validCount()
+        && (resource.data.day == request.time.date()
+          ? request.resource.data.used == resource.data.used + 1
+          : request.resource.data.used == 1);
+    }
+  }
+}
