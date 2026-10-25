@@ -2,6 +2,7 @@ import { Platform, TurboModuleRegistry } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { getApp, getApps, initializeApp } from "firebase/app";
 import { deleteDoc, doc, getFirestore } from "firebase/firestore";
+import { deleteLibrary } from "./library";
 import {
   deleteUser,
   EmailAuthProvider,
@@ -84,7 +85,7 @@ export const isGoogleUser = (user: User) => user.providerData.some((p) => p.prov
 
 // Deletes the account for good. Firebase only allows that right after signing in, so it first confirms who it
 // is: Google accounts pick the account again, email accounts give their password. False if the picker was closed.
-export async function deleteAccount(user: User, password: string): Promise<boolean> {
+export async function deleteAccount(user: User, password: string, beforeDelete: () => Promise<void> = async () => {}): Promise<boolean> {
   if (!isGoogleUser(user)) {
     await reauthenticateWithCredential(user, EmailAuthProvider.credential(user.email ?? "", password));
   } else if (Platform.OS === "web") {
@@ -97,7 +98,10 @@ export async function deleteAccount(user: User, password: string): Promise<boole
     if (!cred) return false;
     await reauthenticateWithCredential(user, cred);
   }
-  await deleteDoc(doc(getFirestore(firebaseAuth().app), "profiles", user.uid));
+  await beforeDelete();
+  const db = getFirestore(firebaseAuth().app);
+  await deleteLibrary(db, user.uid);
+  await deleteDoc(doc(db, "profiles", user.uid));
   await deleteUser(user);
   return true;
 }

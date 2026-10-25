@@ -1,6 +1,36 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    match /accounts/{uid}/{kind}/{id} {
+      function owner() {
+        return request.auth != null && request.auth.uid == uid
+          && kind in ['gadgets', 'history'];
+      }
+      function text(value, maximum) {
+        return value is string && value.size() <= maximum;
+      }
+      function validGadget(value) {
+        return value is map && value.keys().hasAll(['id', 'name', 'kind', 'added'])
+          && value.keys().hasOnly(['id', 'name', 'kind', 'added'])
+          && value.id == id && text(value.name, 1000) && text(value.kind, 100)
+          && text(value.added, 40);
+      }
+      function validCheck(value) {
+        return value is map && value.keys().hasAll(['id', 'gadget', 'date', 'title', 'detail', 'status'])
+          && value.keys().hasOnly(['id', 'gadget', 'date', 'title', 'detail', 'status'])
+          && value.id == id && text(value.gadget, 128) && text(value.date, 40)
+          && text(value.title, 10000) && text(value.detail, 200000)
+          && value.status in ['fixed', 'checked', 'pro'];
+      }
+      allow read, delete: if owner();
+      // Keep a deletion marker so a legacy device cannot import an item that was already removed.
+      allow create, update: if owner() && id.matches('^[A-Za-z0-9_-]{1,128}$')
+        && request.resource.data.keys().hasAll(['value'])
+        && request.resource.data.keys().hasOnly(['value'])
+        && (request.resource.data.value == null
+          || (kind == 'gadgets' ? validGadget(request.resource.data.value) : validCheck(request.resource.data.value)));
+    }
+
     match /profiles/{uid} {
       function owner() {
         return request.auth != null && request.auth.uid == uid;

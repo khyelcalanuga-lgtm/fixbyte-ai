@@ -1,7 +1,9 @@
 import { forwardRef, useEffect, useId, useRef, useState, type ComponentProps, type ComponentRef, type ReactNode, type RefObject } from "react";
 import {
   Alert,
+  AccessibilityInfo,
   Animated,
+  AppState,
   Easing,
   Image,
   Keyboard,
@@ -33,7 +35,7 @@ import * as SystemUI from "expo-system-ui";
 import * as ImagePicker from "expo-image-picker";
 import { Feather as FeatherOutline, Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Location from "expo-location";
-import Svg, { Circle, Defs, LinearGradient, Path, Polyline, Rect, Stop, type CircleProps } from "react-native-svg";
+import Svg, { Circle, Defs, LinearGradient, Mask, Path, Pattern, Polyline, RadialGradient, Rect, Stop, type CircleProps } from "react-native-svg";
 import { useFonts } from "expo-font";
 // Per-weight imports: the package root pulls in all 18 Poppins files.
 import { Poppins_400Regular } from "@expo-google-fonts/poppins/400Regular";
@@ -42,6 +44,8 @@ import { Poppins_600SemiBold } from "@expo-google-fonts/poppins/600SemiBold";
 import { apiFetch } from "../lib/api";
 import { DAILY_LIMIT, LIMIT_MESSAGE, SYNC_MESSAGE, recordSharedUse, recordUse, resetUsage, usedToday, watchSharedUsage } from "../lib/usage";
 import { load, save } from "../lib/store";
+import { clearLibraryCache, newLibraryId, openLibraryList, type LibraryList, type Gadget, type Check, type CheckStatus } from "../lib/library";
+import { getFirestore } from "firebase/firestore";
 import { AVATAR_COLORS, loadAvatarColor, resetAvatarColorCache, saveAvatarColor, watchAvatarColor } from "../lib/profile";
 import { allowReminders, cancelReminders, remindLater } from "../lib/reminders";
 import { authMessage, deleteAccount, firebaseAuth, firebaseReady, googleSignIn, googleSignOut, isGoogleUser } from "../lib/auth";
@@ -234,7 +238,7 @@ function tone(col: string): string {
 const PAGE_BG = () => (DARK ? "#111113" : "#F3F3F3"); // the page, below the cards
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const NATIVE = Platform.OS !== "web"; // Animated's native driver doesn't exist on web
-const STAGGER_MS = 350; // gap between two chat bubbles arriving in the same turn
+const STAGGER_MS = 100; // gap between two chat bubbles arriving in the same turn
 const STEP_MS = 900; // time each already-known checklist row spends "in progress"
 const MIN_DIAG_MS = 3000; // shortest time the Diagnosing screen stays up, so row 3 is visibly in progress too
 const RING_PAD = 6; // inset of the progress arc, so its 10pt dot isn't clipped
@@ -286,28 +290,26 @@ export default function App() {
   // The Firebase account; undefined while Firebase is still restoring a saved sign-in.
   const [user, setUser] = useState<User | null | undefined>(firebaseReady ? undefined : null);
   const signedIn = firebaseReady ? !!user : welcomed;
-  // Gadgets are kept per account on this device, so a new account starts with none.
-  const gadgetsKey = `${GADGETS_KEY}-${user?.uid ?? "offline"}`;
+  const uid = user?.uid ?? "offline";
   const [gadgets, setGadgets] = useState<Gadget[]>([]);
-  useEffect(() => setGadgets(loadGadgets(gadgetsKey)), [gadgetsKey]);
-  const saveGadgets = (list: Gadget[]) => {
-    setGadgets(list);
-    save(gadgetsKey, JSON.stringify(list));
-  };
-  const historyKey = `${HISTORY_KEY}-${user?.uid ?? "offline"}`;
   const [history, setHistory] = useState<Check[]>([]);
+  const [libraryErrors, setLibraryErrors] = useState({ gadgets: "", history: "" });
+  const [libraryVersion, setLibraryVersion] = useState(0);
+  const library = useRef<{ uid: string; gadgets: LibraryList<Gadget>; history: LibraryList<Check> } | null>(null);
   useEffect(() => {
-    try {
-      const list = JSON.parse(load(historyKey) ?? "[]");
-      setHistory(Array.isArray(list) ? list : []);
-    } catch {
-      setHistory([]);
-    }
-  }, [historyKey]);
-  const saveHistory = (list: Check[]) => {
-    setHistory(list);
-    save(historyKey, JSON.stringify(list));
-  };
+    setLibraryErrors({ gadgets: "", history: "" });
+    const db = user ? getFirestore(firebaseAuth().app) : null;
+    const current = {
+      uid,
+      gadgets: openLibraryList(db, uid, "gadgets", setGadgets, message => setLibraryErrors(errors => ({ ...errors, gadgets: message }))),
+      history: openLibraryList(db, uid, "history", setHistory, message => setLibraryErrors(errors => ({ ...errors, history: message }))),
+    };
+    library.current = current;
+    return () => { void current.gadgets.stop(); void current.history.stop(); };
+  }, [uid, libraryVersion]);
+  const saveGadgets = (list: Gadget[]) => { if (library.current?.uid === uid) library.current.gadgets.save(gadgets, list); };
+  const saveHistory = (list: Check[]) => { if (library.current?.uid === uid) library.current.history.save(history, list); };
+  const stopLibrary = async () => { await Promise.all([library.current?.gadgets.stop(), library.current?.history.stop()]); };
   const [forGadget, setForGadget] = useState<Gadget | null>(null); // "Check this gadget": the chat is about this one
   // A saved diagnosis that matched no gadget, waiting for "Which gadget is this?".
   const [filing, setFiling] = useState<{ turn: number; id: string; device?: string; kind: string } | null>(null);
@@ -317,7 +319,7 @@ export default function App() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [text, setText] = useState("");
   const [image, setImage] = useState<string | null>(null); // data URL
-  const [attachOpen, setAttachOpen] = useState(false); // the paperclip's camera / gallery menu
+  const [attachOpen, setAttachOpen] = useState(false); // the plus button's camera / gallery menu
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [startedAt, setStartedAt] = useState<Date | null>(null);
@@ -327,7 +329,6 @@ export default function App() {
   const [showShops, setShowShops] = useState(false); // Repair Shops page, opened from "Find a repair shop"
   const [used, setUsed] = useState<number | null>(null); // null until a signed-in account's shared count loads
   const [usageError, setUsageError] = useState(false);
-  const uid = user?.uid ?? "offline";
   const scroll = useRef<ComponentRef<typeof ScrollView>>(null);
   const input = useRef<ComponentRef<typeof TextInput>>(null);
   const run = useRef(0); // bumped by cancel() so a late reply from a cancelled request is ignored
@@ -410,7 +411,7 @@ export default function App() {
 
   // Save every finished diagnosis, even before its gadget is chosen, so a skipped prompt does not lose the check.
   function fileCheck(turn: number, gadget: string, check: Omit<Check, "id" | "gadget">) {
-    const id = Date.now().toString(36);
+    const id = newLibraryId();
     saveHistory([...history, { id, gadget, ...check }]);
     setTurns((ts) => ts.map((t, i) => (i === turn && t.role === "assistant" ? { ...t, check: id } : t)));
     return id;
@@ -652,9 +653,11 @@ export default function App() {
           <Gadgets
             gadgets={gadgets}
             history={history}
+            syncError={libraryErrors.gadgets || libraryErrors.history}
             onChange={(list) => {
               saveGadgets(list);
-              saveHistory(history.filter((c) => list.some((g) => g.id === c.gadget))); // a removed gadget's checks go too
+              const removed = new Set(gadgets.filter(g => !list.some(next => next.id === g.id)).map(g => g.id));
+              saveHistory(history.filter(c => !removed.has(c.gadget)));
             }}
             onCheck={(g) => {
               reset();
@@ -663,7 +666,7 @@ export default function App() {
             }}
           />
         ) : tab === "history" ? (
-          <History gadgets={gadgets} history={history} onChange={saveHistory} onDiagnose={() => setTab("home")} />
+          <History gadgets={gadgets} history={history} syncError={libraryErrors.history || libraryErrors.gadgets} onChange={saveHistory} onDiagnose={() => setTab("home")} />
         ) : tab === "profile" ? (
           <Profile
             key={uid}
@@ -682,7 +685,14 @@ export default function App() {
             }}
             user={user ?? null}
             onSignOut={leave}
-            onErase={() => {
+            onDeleteAccount={async password => {
+              if (!user) return false;
+              try { return await deleteAccount(user, password, stopLibrary); }
+              finally { if (firebaseAuth().currentUser) setLibraryVersion(version => version + 1); }
+            }}
+            onErase={async () => {
+              void stopLibrary();
+              clearLibraryCache(uid);
               resetAvatarColorCache(user ?? null);
               setAvatarColor(AVATAR_COLORS[0].value);
               cancelReminders();
@@ -690,9 +700,10 @@ export default function App() {
               if (!user) setUsed(0);
               save(SETTINGS_KEY, "{}");
               setSettings(DEFAULT_SETTINGS);
-              saveGadgets([]);
-              saveHistory([]);
+              setGadgets([]);
+              setHistory([]);
               leave();
+              if (!user) setLibraryVersion(version => version + 1);
             }}
           />
         ) : diag ? (
@@ -894,7 +905,7 @@ export default function App() {
                     <View style={s.preview}>
                       <Image source={{ uri: image }} style={s.thumb} />
                       <Pressable onPress={() => setImage(null)} style={s.remove} accessibilityLabel="Remove photo">
-                        <Feather name="x" size={14} color={tone("#fff")} />
+                      <Feather name="x" size={14} color={tone("#fff")} />
                       </Pressable>
                     </View>
                   )}
@@ -904,11 +915,13 @@ export default function App() {
                         Keyboard.dismiss(); // otherwise the open keyboard covers the menu
                         setAttachOpen((o) => !o);
                       }}
-                      hitSlop={8}
+                      hitSlop={12}
                       accessibilityLabel={attachOpen ? "Close attach menu" : "Attach a photo"}
+                      accessibilityRole="button"
                       accessibilityState={{ expanded: attachOpen }}
+                      aria-expanded={attachOpen}
                     >
-                      <Feather name={attachOpen ? "x" : "paperclip"} size={17} color={tone("#000")} />
+                      <Feather name={attachOpen ? "x" : "plus"} size={22} color={tone("#000")} />
                     </Pressable>
                     <TextInput
                       ref={input}
@@ -985,28 +998,66 @@ function greeting(hour = new Date().getHours()) {
 }
 
 // Home background: a circle of black dots behind the message bar, fading out toward its edge.
-// Dots are placed in code (not an SVG mask) so it renders the same on Android, iOS and web.
+// One repeated pattern avoids mounting thousands of native SVG nodes when returning to Home.
 const GLOW_R = 450; // circle radius
 const GLOW_Y = 90; // circle center's height above the bottom edge
 const GLOW_GAP = 16; // dot spacing
-const GLOW_DOTS: { x: number; y: number; o: number }[] = [];
-for (let x = -GLOW_R; x <= GLOW_R; x += GLOW_GAP)
-  for (let y = -GLOW_R; y <= GLOW_Y; y += GLOW_GAP) {
-    // y stops at GLOW_Y: dots further down would sit below the screen's bottom edge.
-    const d = Math.hypot(x, y);
-    if (d < GLOW_R) GLOW_DOTS.push({ x: x + GLOW_R, y: y + GLOW_R, o: 0.1 * (1 - d / GLOW_R) ** 1.5 });
-  }
 
 // The circle is wider than the screen, so it sits in a screen-sized clipped layer: nothing extends past the edges
 // (unclipped, a browser scrolled the whole page sideways to reach the focused message box).
 function DotGlow() {
+  const id = useId();
+  const drift = useRef(new Animated.Value(0)).current;
+  const [canAnimate, setCanAnimate] = useState(false);
+  useEffect(() => {
+    let mounted = true;
+    let allowed = false;
+    const update = (state = AppState.currentState) => {
+      if (mounted) setCanAnimate(allowed && state === "active");
+    };
+    const setReducedMotion = (reduced: boolean) => { allowed = !reduced; update(); };
+    const motion = AccessibilityInfo.addEventListener("reduceMotionChanged", setReducedMotion);
+    const activity = AppState.addEventListener("change", update);
+    AccessibilityInfo.isReduceMotionEnabled().then(setReducedMotion).catch(() => {});
+    return () => { mounted = false; motion.remove(); activity.remove(); };
+  }, []);
+  useEffect(() => {
+    if (!canAnimate) { drift.setValue(0); return; }
+    const animation = Animated.loop(Animated.sequence([
+      Animated.timing(drift, { toValue: 1, duration: 12000, easing: Easing.inOut(Easing.quad), useNativeDriver: NATIVE }),
+      Animated.timing(drift, { toValue: 0, duration: 12000, easing: Easing.inOut(Easing.quad), useNativeDriver: NATIVE }),
+    ]));
+    animation.start();
+    return () => animation.stop();
+  }, [canAnimate, drift]);
   return (
     <View style={s.glowClip} pointerEvents="none">
+      <Animated.View style={[s.flex, {
+        opacity: drift.interpolate({ inputRange: [0, 1], outputRange: [1, 0.9] }),
+        transform: [
+          { translateX: drift.interpolate({ inputRange: [0, 1], outputRange: [0, 4] }) },
+          { translateY: drift.interpolate({ inputRange: [0, 1], outputRange: [0, -6] }) },
+        ],
+      }]}>
       <Svg width={GLOW_R * 2} height={GLOW_R * 2} style={s.glow}>
-        {GLOW_DOTS.map((p, i) => (
-          <Circle key={i} cx={p.x} cy={p.y} r={1.5} fill={tone("#000")} opacity={p.o} />
-        ))}
+        <Defs>
+          <Pattern id={`${id}-dots`} x={-GLOW_GAP / 2} y={-GLOW_GAP / 2} width={GLOW_GAP} height={GLOW_GAP} patternUnits="userSpaceOnUse">
+            <Circle cx={GLOW_GAP / 2} cy={GLOW_GAP / 2} r={1.5} fill={tone("#000")} />
+          </Pattern>
+          <RadialGradient id={`${id}-fade`} cx={GLOW_R} cy={GLOW_R} r={GLOW_R} gradientUnits="userSpaceOnUse">
+            <Stop offset={0} stopColor="#fff" stopOpacity={0.1} />
+            <Stop offset={0.25} stopColor="#fff" stopOpacity={0.065} />
+            <Stop offset={0.5} stopColor="#fff" stopOpacity={0.035} />
+            <Stop offset={0.75} stopColor="#fff" stopOpacity={0.0125} />
+            <Stop offset={1} stopColor="#fff" stopOpacity={0} />
+          </RadialGradient>
+          <Mask id={`${id}-mask`} x={0} y={0} width={GLOW_R * 2} height={GLOW_R * 2} maskUnits="userSpaceOnUse">
+            <Rect width={GLOW_R * 2} height={GLOW_R * 2} fill={`url(#${id}-fade)`} />
+          </Mask>
+        </Defs>
+        <Rect width={GLOW_R * 2} height={GLOW_R * 2} fill={`url(#${id}-dots)`} mask={`url(#${id}-mask)`} />
       </Svg>
+      </Animated.View>
     </View>
   );
 }
@@ -1062,19 +1113,9 @@ function Welcome({ onStart, onSignIn }: { onStart: () => void; onSignIn: () => v
   );
 }
 
-// My gadgets: the devices the user owns, saved on the device per account (a new account starts empty).
+// My gadgets: the devices the user owns, synced per account with a device cache.
 // With no gadgets the page is one focused empty state; search and filters appear once there's something to find.
 // A gadget's checks live in History; its card shows the latest one (issue, status) and the count.
-type Gadget = { id: string; name: string; kind: string; added: string };
-const GADGETS_KEY = "gadgets";
-function loadGadgets(key: string): Gadget[] {
-  try {
-    const list = JSON.parse(load(key) ?? "[]");
-    return Array.isArray(list) ? list : [];
-  } catch {
-    return [];
-  }
-}
 const kindIcon = (kind: string): FeatherName => DEVICE_KINDS.find((k) => k.label === kind)?.icon ?? "box";
 // Date-only strings are read as local dates (new Date("2026-10-20") would be UTC midnight).
 const shortDate = (iso: string) =>
@@ -1107,7 +1148,7 @@ function matchGadget(gadgets: Gadget[], device?: string): Gadget | undefined {
   return hits.length === 1 ? hits[0] : undefined;
 }
 const newGadget = (name: string, kind: string): Gadget => ({
-  id: Date.now().toString(36),
+  id: newLibraryId(),
   name,
   kind,
   added: new Date().toISOString(),
@@ -1125,11 +1166,13 @@ const STATUS_PILL: Record<CheckStatus | "new", { label: string; icon?: FeatherNa
 function Gadgets({
   gadgets,
   history,
+  syncError,
   onChange,
   onCheck,
 }: {
   gadgets: Gadget[];
   history: Check[];
+  syncError: string;
   onChange: (list: Gadget[]) => void;
   onCheck: (g: Gadget) => void;
 }) {
@@ -1177,6 +1220,7 @@ function Gadgets({
       </View>
 
       <ScrollView style={s.flex} contentContainerStyle={s.gList} keyboardShouldPersistTaps="handled">
+        {!!syncError && <Text style={s.error} accessibilityRole="alert">{syncError}</Text>}
         {adding && (
           <AddGadget
             onCancel={() => setAdding(false)}
@@ -1369,7 +1413,7 @@ const TABS: { tab: Tab; icon: keyof typeof MaterialCommunityIcons.glyphMap | "so
 // Apple's own Liquid Glass material exists on iOS 26+ (the second check guards betas that lack the API and crash).
 const NATIVE_GLASS = Platform.OS === "ios" && isLiquidGlassAvailable() && isGlassEffectAPIAvailable();
 
-// One piece of Liquid Glass. On iOS 26 it's Apple's real material (lensing, and it lifts when touched).
+// One piece of Liquid Glass. On iOS 26 it uses Apple's real material.
 // Elsewhere: a flat blur of the page behind (Android reads it from `target`, the page wrapped in a BlurTargetView)
 // with almost no tint; on the web the backdrop is also refracted (lib/refraction.web.ts). Both get a hairline along the top and bottom edges that fades out toward the ends.
 function Glass({ target, style, children, onLayout }: { target: RefObject<ComponentRef<typeof View> | null>; style?: ComponentProps<typeof View>["style"]; children: ReactNode; onLayout?: ComponentProps<typeof View>["onLayout"] }) {
@@ -1380,7 +1424,7 @@ function Glass({ target, style, children, onLayout }: { target: RefObject<Compon
   };
   if (NATIVE_GLASS) {
     return (
-      <GlassView glassEffectStyle="regular" isInteractive colorScheme={DARK ? "dark" : "light"} style={[s.glassNative, style]} onLayout={measure}>
+      <GlassView glassEffectStyle="regular" isInteractive={false} colorScheme={DARK ? "dark" : "light"} style={[s.glassNative, style]} onLayout={measure}>
         <GlassEdges width={box.w} height={box.h} />
         {children}
       </GlassView>
@@ -1424,51 +1468,43 @@ function GlassEdges({ width, height }: { width: number; height: number }) {
 }
 
 // Bottom bar, floating over the page in glass: Home on its own, then My gadgets, History and Profile. The current
-// tab sits under a brighter glass lens that morphs between tabs: the edge facing the new tab springs out first and
-// the trailing edge follows, so it stretches toward the tab, then settles.
+// tab sits under a fixed-width glass lens that slides smoothly between tabs.
 function TabBar({ active, onTab, target }: { active: Tab; onTab: (t: Tab) => void; target: RefObject<ComponentRef<typeof View> | null> }) {
   const [w, setW] = useState(0); // the tab pill's width
-  const left = useRef(new Animated.Value(0)).current;
-  const right = useRef(new Animated.Value(0)).current;
-  const placed = useRef(-1); // tab index the lens sits at; -1 until first laid out
+  const position = useRef(new Animated.Value(0)).current;
+  const placed = useRef(false);
   const i = TABS.findIndex((t) => t.tab === active);
+  const slot = (w - 12) / TABS.length;
 
   useEffect(() => {
-    if (!w) return;
-    const slot = (w - 12) / TABS.length; // three equal slots inside the 6pt padding
-    const l = 6 + i * slot + 2;
-    const r = l + slot - 4;
-    if (placed.current < 0) {
-      left.setValue(l);
-      right.setValue(r);
-    } else if (placed.current !== i) {
-      const forward = i > placed.current;
-      const lead = { tension: 220, friction: 20 };
-      const trail = { tension: 90, friction: 14 };
-      // Layout props (left, width) can't use the native driver.
-      Animated.parallel([
-        Animated.spring(left, { toValue: l, ...(forward ? trail : lead), useNativeDriver: false }),
-        Animated.spring(right, { toValue: r, ...(forward ? lead : trail), useNativeDriver: false }),
-      ]).start();
+    if (slot <= 0) return;
+    if (!placed.current) {
+      position.setValue(i * slot);
+      placed.current = true;
+      return;
     }
-    placed.current = i;
-  }, [w, i, left, right]);
+    const animation = Animated.timing(position, { toValue: i * slot, duration: 180, easing: Easing.out(Easing.cubic), useNativeDriver: NATIVE });
+    animation.start();
+    return () => animation.stop();
+  }, [slot, i, position]);
 
   return (
     <View style={s.tabBar} pointerEvents="box-none">
-      <Pressable onPress={() => onTab("home")} style={s.glassShadow} accessibilityLabel="Home">
+      <Pressable onPress={() => onTab("home")} style={s.glassShadow} accessibilityLabel="Home" accessibilityRole="button">
         <Glass target={target} style={s.tabHome}>
-          <MaterialCommunityIcons name="home-variant" size={25} color={tone("#000")} />
+          <Svg width={26} height={26} viewBox="0 0 24 24" pointerEvents="none">
+            <Path d="M12 3 2 11h3v10h5v-6h4v6h5V11h3Z" fill={tone("#000")} />
+          </Svg>
         </Glass>
       </Pressable>
-      <View style={[s.glassShadow, s.flex]}>
+      <View style={[s.glassShadow, s.flex]} accessibilityRole="tablist" accessibilityLabel="Sections">
         <Glass target={target} style={s.tabPill} onLayout={(e) => setW(e.nativeEvent.layout.width)}>
-          {w > 0 && <Animated.View style={[s.tabMorph, { left, width: Animated.subtract(right, left) }]} />}
+          {w > 0 && <Animated.View style={[s.tabMorph, { width: slot - 4, transform: [{ translateX: position }] }]} />}
           {TABS.map(({ tab, icon, label, short }) => {
             const on = tab === active;
             return (
-              <Pressable key={label} onPress={() => onTab(tab)} style={s.tabItem} accessibilityLabel={label} accessibilityState={{ selected: on }}>
-                {/* The current tab's icon turns the app's green; the label stays dark so it stays readable. */}
+              <Pressable key={label} onPress={() => onTab(tab)} style={s.tabItem} accessibilityLabel={label} accessibilityRole="tab" accessibilityState={{ selected: on }} aria-selected={on}>
+                {/* The active tab's icon and label use the same accent. */}
                 {icon === "solid-phone" ? (
                   <View style={s.tabIconBox}>
                     <View style={[s.solidPhone, { backgroundColor: on ? GREEN : tone("rgba(0,0,0,0.7)") }]} />
@@ -1544,7 +1580,7 @@ const HELP: Doc = [
 const PRIVACY: Doc = [
   { heading: "What you send", body: "Photos and descriptions you send go through FixByte's server to an AI provider (Google Gemini, Groq, Mistral or OpenRouter) to produce your diagnosis. FixByte's server doesn't keep them; each provider handles them under its own privacy policy." },
   { heading: "Your location", body: "Used only to find nearby repair shops and directions. Shop searches go through FixByte's server to OpenStreetMap services, and directions come from OpenStreetMap's routing service. Your location isn't stored." },
-  { heading: "On your device", body: "Your name, email and settings are saved on this device. Signed-in daily diagnosis counts are saved in Firebase to sync across devices." },
+  { heading: "Saved data", body: "Settings stay on this device. When signed in, your gadgets, diagnosis history, avatar color and daily diagnosis count are saved in Firebase and synced across devices." },
   { heading: "What we don't do", body: "No ads, no tracking, and your data isn't sold." },
   { heading: "Contact", body: `Questions about your privacy: ${SUPPORT_EMAIL}` },
 ];
@@ -1576,6 +1612,7 @@ function Profile({
   profileError,
   onColorChange,
   onSignOut,
+  onDeleteAccount,
   onErase,
 }: {
   gadgetCount: number;
@@ -1588,7 +1625,8 @@ function Profile({
   profileError: string;
   onColorChange: (color: string) => Promise<void>;
   onSignOut: () => void;
-  onErase: () => void;
+  onDeleteAccount: (password: string) => Promise<boolean>;
+  onErase: () => Promise<void>;
 }) {
   const [page, setPage] = useState<ProfilePage | null>(null);
   const [note, setNote] = useState("");
@@ -1606,13 +1644,13 @@ function Profile({
     setNote("");
   };
 
-  // Deletes the Firebase account, then this device's data (the account holds nothing else).
+  // Remove shared records before deleting the account, then clear this device's cache.
   async function removeAccount() {
     if (!user) return;
     setDelError("");
     setDeleting(true);
     try {
-      if (await deleteAccount(user, delPassword)) return onErase();
+      if (await onDeleteAccount(delPassword)) { await onErase(); return; }
     } catch (e) {
       setDelError(authMessage(e));
     }
@@ -1742,9 +1780,9 @@ function Profile({
         </Pressable>
         {/* Two taps instead of a dialog: Alert has no buttons on web. */}
         <Pressable
-          onPress={() => {
+          onPress={async () => {
             if (!confirmErase) return setConfirmErase(true);
-            try { onErase(); } catch (e) { setNote(e instanceof Error ? e.message : "Your data could not be erased. Try again."); }
+            try { await onErase(); } catch (e) { setNote(e instanceof Error ? e.message : "Your data could not be erased. Try again."); }
           }}
           style={[s.googleBtn, s.pSignOut]}
           accessibilityRole="button"
@@ -1753,7 +1791,7 @@ function Profile({
           <Text style={[s.googleText, s.pSignOutText]}>{confirmErase ? "Tap again to erase" : "Erase data on this device"}</Text>
         </Pressable>
         <Text style={[s.msgText, s.dim, s.pHint]}>
-          Erasing removes your name and settings from this device and signs you out. Your account, avatar color, and shared daily count stay.
+          Erasing removes saved data from this device and signs you out. Your account, synced gadgets and history, avatar color, and daily count stay.
         </Text>
         {user && (
           <>
@@ -1785,7 +1823,7 @@ function Profile({
               {confirmDelete && isGoogleUser(user)
                 ? "Google will ask you to pick your account once more to confirm it's you. "
                 : ""}
-              Deleting removes your account{user.email ? ` (${user.email})` : ""} and everything on this device. It can't be undone.
+              Deleting removes your account{user.email ? ` (${user.email})` : ""}, synced gadgets and history, and saved data on this device. It can't be undone.
             </Text>
           </>
         )}
@@ -1905,7 +1943,7 @@ function Profile({
         <View style={s.pSettings}>
           <SettingRow icon="lock" label="Password and security" onPress={() => setPage("security")} />
           <Pressable onPress={onSignOut} style={[s.pRow, s.pLine]} accessibilityRole="button">
-            <View style={[s.pIcon, s.pIconDanger]}>
+            <View style={s.pIcon}>
               <Feather name="log-out" size={17} color="#dc2626" />
             </View>
             <Text style={[s.pRowLabel, s.pSignOutText]}>Sign out</Text>
@@ -1928,7 +1966,7 @@ function SubPage({ title, onBack, children }: { title: string; onBack: () => voi
   return (
     <View style={s.flex}>
       <View style={s.header}>
-        <Pressable onPress={onBack} style={s.circle} accessibilityLabel="Back">
+        <Pressable onPress={onBack} style={[s.circle, { backgroundColor: "transparent" }]} accessibilityLabel="Back">
           <Feather name="arrow-left" size={20} color={tone("#000")} />
         </Pressable>
         <Text style={s.title}>{title}</Text>
@@ -1997,21 +2035,20 @@ function EditProfile({
       </View>
       <Text style={s.authLabel}>Avatar color</Text>
       <View style={s.avatarColors} accessibilityRole="radiogroup" accessibilityLabel="Avatar color">
-        {AVATAR_COLORS.map((color) => (
+        {AVATAR_COLORS.map(({ label, value }) => (
           <Pressable
-            key={color.value}
-            onPress={() => chooseColor(color.value)}
+            key={value}
+            onPress={() => chooseColor(value)}
             disabled={busy}
-            style={[s.avatarSwatch, { backgroundColor: color.value }]}
+            style={[s.avatarSwatch, { backgroundColor: value }]}
             accessibilityRole="radio"
-            accessibilityLabel={color.label}
-            accessibilityState={{ checked: (pendingColor ?? avatarColor) === color.value, disabled: busy }}
+            accessibilityLabel={label}
+            accessibilityState={{ checked: (pendingColor ?? avatarColor) === value, disabled: busy }}
           >
-            {(pendingColor ?? avatarColor) === color.value && <Feather name="check" size={22} color={ON_ACCENT} />}
+            {(pendingColor ?? avatarColor) === value && <Feather name="check" size={22} color={ON_ACCENT} />}
           </Pressable>
         ))}
       </View>
-      <Text style={[s.authNote, s.pHint]}>{pendingColor ? "Saving avatar color…" : emailLocked ? "Color choices save automatically and sync across your devices." : "Color choices save automatically on this device."}</Text>
       {!!profileError && <Text style={s.error}>{profileError}</Text>}
       <Field label="Name" value={name} onChangeText={setName} placeholder="Your name" autoComplete="name" textContentType="name" />
       <Field
@@ -2057,7 +2094,9 @@ function Toggle({ on, onChange, label }: { on: boolean; onChange: (on: boolean) 
   const v = useRef(new Animated.Value(on ? 1 : 0)).current;
   useEffect(() => {
     // Not the native driver: it can't animate the background colour.
-    Animated.spring(v, { toValue: on ? 1 : 0, friction: 7, tension: 120, useNativeDriver: false }).start();
+    const animation = Animated.timing(v, { toValue: on ? 1 : 0, duration: 160, easing: Easing.out(Easing.quad), useNativeDriver: false });
+    animation.start();
+    return () => animation.stop();
   }, [on, v]);
   return (
     <RNPressable onPress={() => onChange(!on)} hitSlop={8} accessibilityRole="switch" accessibilityState={{ checked: on }} accessibilityLabel={label}>
@@ -2069,11 +2108,8 @@ function Toggle({ on, onChange, label }: { on: boolean; onChange: (on: boolean) 
 }
 
 // History: a month calendar marking each day's checks for one gadget, and the list of those checks.
-// Checks are saved when a diagnosis finishes (per account, on this device). "fixed" comes from the repair
+// Checks sync to the account when a diagnosis finishes. "fixed" comes from the repair
 // guide's "Did it work?".
-type CheckStatus = "fixed" | "checked" | "pro";
-type Check = { id: string; gadget: string; date: string; title: string; detail: string; status: CheckStatus }; // date: YYYY-MM-DD
-const HISTORY_KEY = "history";
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const WEEKDAYS = ["S", "M", "T", "W", "T", "F", "S"];
 const ymd = (y: number, m: number, d: number) => `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
@@ -2095,11 +2131,13 @@ const parseDay = (d: string) => new Date(`${d}T00:00:00`);
 function History({
   gadgets,
   history,
+  syncError,
   onChange,
   onDiagnose,
 }: {
   gadgets: Gadget[];
   history: Check[];
+  syncError: string;
   onChange: (list: Check[]) => void;
   onDiagnose: () => void;
 }) {
@@ -2184,6 +2222,7 @@ function History({
       </View>
 
       <ScrollView style={s.flex} contentContainerStyle={s.gList}>
+        {!!syncError && <Text style={s.error} accessibilityRole="alert">{syncError}</Text>}
         {!history.length ? (
           <View style={s.gEmptyCard}>
             <View style={s.gHero}>
@@ -2568,7 +2607,7 @@ function Auth({ initial, onBack, onDone }: { initial: AuthMode; onBack: () => vo
   function switchTo(m: AuthMode) {
     setMode(m);
     setMessage(null);
-    Animated.spring(slide, { toValue: m === "register" ? 1 : 0, friction: 8, tension: 90, useNativeDriver: NATIVE }).start();
+    Animated.timing(slide, { toValue: m === "register" ? 1 : 0, duration: 180, easing: Easing.out(Easing.cubic), useNativeDriver: NATIVE }).start();
   }
 
   const [busy, setBusy] = useState(false);
@@ -3568,47 +3607,48 @@ function Diagnosing({ d, onCancel }: { d: Diag; onCancel: () => void }) {
   );
 }
 
-// Every button eases down a little while pressed and springs back on release. It shadows RN's Pressable,
-// so all buttons in this file get it.
+// Buttons fade on touch without changing their size or moving their hit area.
 const AnimatedPressable = Animated.createAnimatedComponent(RNPressable);
 function Pressable({ style, onPressIn, onPressOut, ...props }: PressableProps) {
-  const scale = useRef(new Animated.Value(1)).current;
+  const opacity = useRef(new Animated.Value(1)).current;
   const to = (toValue: number) =>
-    Animated.spring(scale, { toValue, speed: 40, bounciness: toValue === 1 ? 8 : 0, useNativeDriver: NATIVE }).start();
+    Animated.timing(opacity, { toValue, duration: toValue === 1 ? 140 : 90, easing: Easing.out(Easing.quad), useNativeDriver: NATIVE }).start();
+  useEffect(() => () => opacity.stopAnimation(), [opacity]);
   return (
     <AnimatedPressable
       {...props}
       onPressIn={(e) => {
-        to(0.95);
+        to(0.72);
         onPressIn?.(e);
       }}
       onPressOut={(e) => {
         to(1);
         onPressOut?.(e);
       }}
-      style={[style as StyleProp<ViewStyle>, { transform: [{ scale }] }]}
+      style={[style as StyleProp<ViewStyle>, { opacity: Animated.multiply(opacity, StyleSheet.flatten(style as StyleProp<ViewStyle>)?.opacity ?? 1) }]}
     />
   );
 }
 
-// New chat bubbles pop in: a quick fade and rise, springing (with a slight overshoot) from the side they sit on.
+// New elements fade in with a short, eased slide, keeping their size fixed.
 // Keyed by turn index, so only bubbles that just arrived animate; a second bubble in the same turn waits STAGGER_MS.
 type PopProps = { from: "left" | "right"; delay?: number; style?: ComponentProps<typeof View>["style"]; children: ReactNode };
 function Pop({ from, delay = 0, style, children }: PopProps) {
   const v = useRef(new Animated.Value(0)).current;
   useEffect(() => {
-    Animated.spring(v, { toValue: 1, delay, friction: 7, tension: 120, useNativeDriver: NATIVE }).start();
+    const animation = Animated.timing(v, { toValue: 1, delay, duration: 200, easing: Easing.out(Easing.cubic), useNativeDriver: NATIVE });
+    animation.start();
+    return () => animation.stop();
   }, [v, delay]);
   return (
     <Animated.View
       style={[
         style,
         {
-          opacity: v.interpolate({ inputRange: [0, 0.5], outputRange: [0, 1], extrapolate: "clamp" }),
-          transformOrigin: from === "left" ? "bottom left" : "bottom right",
+          opacity: v,
           transform: [
-            { translateY: v.interpolate({ inputRange: [0, 1], outputRange: [12, 0] }) },
-            { scale: v.interpolate({ inputRange: [0, 1], outputRange: [0.9, 1] }) },
+            { translateX: v.interpolate({ inputRange: [0, 1], outputRange: [from === "left" ? -4 : 4, 0] }) },
+            { translateY: v.interpolate({ inputRange: [0, 1], outputRange: [6, 0] }) },
           ],
         },
       ]}
@@ -3657,18 +3697,19 @@ function Segment({ state }: { state: "done" | "now" | "next" }) {
   );
 }
 
-// Done: pops in. Active: pulsing dot with a ripple. Next: dashed circle slowly turning.
+// Only the active step pulses; completed steps fade in and upcoming steps stay still.
 function StepIcon({ state }: { state: "done" | "active" | "next" }) {
   const v = useRef(new Animated.Value(0)).current;
   useEffect(() => {
+    if (state === "next") return;
     const anim =
       state === "done"
-        ? Animated.spring(v, { toValue: 1, friction: 5, tension: 140, useNativeDriver: NATIVE })
+        ? Animated.timing(v, { toValue: 1, duration: 180, easing: Easing.out(Easing.quad), useNativeDriver: NATIVE })
         : Animated.loop(
             Animated.timing(v, {
               toValue: 1,
-              duration: state === "active" ? 1200 : 6000,
-              easing: state === "active" ? Easing.out(Easing.quad) : Easing.linear,
+              duration: 1400,
+              easing: Easing.linear,
               useNativeDriver: NATIVE,
             }),
           );
@@ -3678,28 +3719,20 @@ function StepIcon({ state }: { state: "done" | "active" | "next" }) {
 
   if (state === "done") {
     return (
-      <Animated.View style={[s.stepIcon, s.stepDone, { transform: [{ scale: v }] }]}>
+      <Animated.View style={[s.stepIcon, s.stepDone, { opacity: v }]}>
         <Feather name="check" size={16} color={GREEN} />
       </Animated.View>
     );
   }
   if (state === "active") {
-    const ripple = {
-      opacity: v.interpolate({ inputRange: [0, 1], outputRange: [0.45, 0] }),
-      transform: [{ scale: v.interpolate({ inputRange: [0, 1], outputRange: [1, 1.7] }) }],
-    };
-    const pulse = { transform: [{ scale: v.interpolate({ inputRange: [0, 0.5, 1], outputRange: [1, 0.6, 1] }) }] };
+    const pulse = { opacity: v.interpolate({ inputRange: [0, 0.5, 1], outputRange: [0.4, 1, 0.4] }) };
     return (
-      <View>
-        <Animated.View style={[s.stepIcon, s.stepRipple, ripple]} />
-        <View style={[s.stepIcon, s.stepActive]}>
-          <Animated.View style={[s.stepDot, pulse]} />
-        </View>
+      <View style={[s.stepIcon, s.stepActive]}>
+        <Animated.View style={[s.stepDot, pulse]} />
       </View>
     );
   }
-  const rotate = v.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] });
-  return <Animated.View style={[s.stepIcon, s.stepNext, { transform: [{ rotate }] }]} />;
+  return <View style={[s.stepIcon, s.stepNext]} />;
 }
 
 function Card(p: { icon: "camera" | "message-square"; title: string; subtitle: string; onPress: () => void }) {
@@ -3809,13 +3842,13 @@ function makeStyles() {
   tabHome: { width: 64, height: 64, alignItems: "center", justifyContent: "center" },
   tabPill: { flexDirection: "row", height: 64, padding: 6 },
   // The selected tab's lens: brighter glass with its own rim.
-  tabMorph: { position: "absolute", top: 6, bottom: 6, borderRadius: 100, backgroundColor: surface("rgba(0,0,0,0.07)") },
+  tabMorph: { position: "absolute", left: 8, top: 6, bottom: 6, borderRadius: 100, backgroundColor: surface("rgba(0,0,0,0.07)") },
   tabItem: { flex: 1, alignItems: "center", justifyContent: "center", gap: 2 },
   tabIconBox: { width: 24, height: 24, alignItems: "center", justifyContent: "center" },
   solidPhone: { width: 14, height: 21, borderRadius: 4 }, // a phone silhouette, matched to the solid clock and person
   headerPhone: { width: 12, height: 18, borderRadius: 3.5, backgroundColor: tone("#000") }, // same phone, at header-icon size
   tabLabel: { fontFamily: "Poppins_500Medium", fontSize: 10, lineHeight: 13, color: tone("rgba(0,0,0,0.7)") },
-  tabLabelOn: { fontFamily: "Poppins_600SemiBold", color: tone("#000") },
+  tabLabelOn: { fontFamily: "Poppins_600SemiBold", color: GREEN },
   glass: { overflow: "hidden", borderRadius: 100, backgroundColor: DARK ? "rgba(36,36,40,0.45)" : "rgba(255,255,255,0.12)" },
   glassNative: { borderRadius: 100, overflow: "hidden" },
   glassShadow: { borderRadius: 100, shadowColor: "#000", shadowOpacity: 0.1, shadowRadius: 24, shadowOffset: { width: 0, height: 10 } },
@@ -3837,8 +3870,7 @@ function makeStyles() {
   pSettings: { marginTop: 12, paddingHorizontal: 16, paddingVertical: 4, borderRadius: 25, backgroundColor: surface("#fff") },
   pRow: { flexDirection: "row", alignItems: "center", minHeight: 58, paddingVertical: 8, gap: 14 },
   pLine: { borderTopWidth: 1, borderTopColor: surface("rgba(0,0,0,0.06)") },
-  pIcon: { width: 34, height: 34, borderRadius: 11, alignItems: "center", justifyContent: "center", backgroundColor: surface("#F3F3F3") },
-  pIconDanger: { backgroundColor: surface("#FDECEC") },
+  pIcon: { width: 34, height: 34, alignItems: "center", justifyContent: "center" },
   pRowLabel: { flex: 1, fontFamily: "Poppins_400Regular", fontSize: 15, color: tone("#000") },
   pRowSub: { fontFamily: "Poppins_400Regular", fontSize: 12, lineHeight: 17, color: tone("rgba(0,0,0,0.5)"), marginTop: 1 },
   pRowValue: { flexShrink: 1, maxWidth: "40%", fontFamily: "Poppins_400Regular", fontSize: 14, color: tone("rgba(0,0,0,0.45)") },
@@ -3996,7 +4028,7 @@ function makeStyles() {
   attachMenu: { position: "absolute", left: 20, bottom: 87, padding: 6, borderRadius: 22, backgroundColor: surface("#fff"), borderWidth: 1, borderColor: tone("rgba(0,0,0,0.07)") },
   attachItem: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 12, paddingHorizontal: 14, borderRadius: 16 },
   attachText: { fontFamily: "Poppins_400Regular", fontSize: 14, color: tone("#000") },
-  input: { flex: 1, height: "100%", marginLeft: 15, fontFamily: "Poppins_400Regular", fontSize: 15, color: tone("#000") },
+  input: { flex: 1, height: "100%", marginLeft: 15, paddingVertical: 0, textAlignVertical: "center", includeFontPadding: false, fontFamily: "Poppins_400Regular", fontSize: 15, lineHeight: 22, color: tone("#000") },
   send: { width: 45, height: 45, borderRadius: 100, backgroundColor: GREEN, alignItems: "center", justifyContent: "center" },
   disabled: { opacity: 0.5 },
 
@@ -4016,7 +4048,6 @@ function makeStyles() {
   stepDone: { backgroundColor: surface("#000") },
   stepActive: { borderWidth: 1.5, borderColor: GREEN, backgroundColor: surface("#fff") },
   stepDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: GREEN },
-  stepRipple: { position: "absolute", backgroundColor: GREEN },
   stepNext: { borderWidth: 1.5, borderColor: tone("rgba(0,0,0,0.4)"), borderStyle: "dashed" },
   stepLabel: { flex: 1, marginLeft: 10, fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 20, color: tone("#000") },
   stepStatus: { maxWidth: 95, marginLeft: 8, fontFamily: "Poppins_400Regular", fontSize: 12, lineHeight: 17, textAlign: "right", color: tone("rgba(0,0,0,0.4)") },
