@@ -1,4 +1,4 @@
-import { Platform } from "react-native";
+import { Platform, TurboModuleRegistry } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { getApp, getApps, initializeApp } from "firebase/app";
 import {
@@ -15,7 +15,12 @@ import {
   type Persistence,
   type User,
 } from "firebase/auth";
-import { GoogleSignin } from "@react-native-google-signin/google-signin";
+
+function phoneGoogle() {
+  // Metro reports a missing native module as fatal before a local catch can handle the require.
+  if (!TurboModuleRegistry.get("RNGoogleSignin")) return null;
+  return (require("@react-native-google-signin/google-signin") as typeof import("@react-native-google-signin/google-signin")).GoogleSignin;
+}
 
 // Firebase sign-in. The config comes from .env (EXPO_PUBLIC_FIREBASE_*): these values identify the Firebase
 // project and are meant to ship inside the app; Firebase's own rules protect the accounts.
@@ -66,6 +71,8 @@ export async function googleSignIn() {
 async function phoneGoogleCredential() {
   const webClientId = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
   if (!webClientId) throw { code: "auth/operation-not-allowed" };
+  const GoogleSignin = phoneGoogle();
+  if (!GoogleSignin) throw { code: "auth/google-unavailable" };
   GoogleSignin.configure({ webClientId });
   await GoogleSignin.hasPlayServices();
   const res = await GoogleSignin.signIn();
@@ -82,6 +89,8 @@ export async function deleteAccount(user: User, password: string): Promise<boole
   } else if (Platform.OS === "web") {
     await reauthenticateWithPopup(user, new GoogleAuthProvider()); // first await: the popup needs the tap's gesture
   } else {
+    const GoogleSignin = phoneGoogle();
+    if (!GoogleSignin) throw { code: "auth/google-unavailable" };
     await GoogleSignin.signOut().catch(() => {}); // so the picker asks instead of reusing the last account
     const cred = await phoneGoogleCredential();
     if (!cred) return false;
@@ -93,7 +102,7 @@ export async function deleteAccount(user: User, password: string): Promise<boole
 
 // Forget the Google account on the phone too, so the next sign-in asks which account to use.
 export function googleSignOut() {
-  if (Platform.OS !== "web") GoogleSignin.signOut().catch(() => {});
+  if (Platform.OS !== "web") phoneGoogle()?.signOut().catch(() => {});
 }
 
 // Firebase error codes in plain words.
@@ -112,6 +121,7 @@ const MESSAGES: Record<string, string> = {
   "auth/popup-closed-by-user": "Google sign-in was closed before it finished.",
   "auth/popup-blocked": "Your browser blocked the Google sign-in window. Allow pop-ups and try again.",
   "auth/operation-not-allowed": "This sign-in method isn't turned on in Firebase yet.",
+  "auth/google-unavailable": "Google sign-in needs an app build that includes it. Expo Go does not include it.",
   "auth/requires-recent-login": "Sign in again, then try that once more.",
   "auth/user-mismatch": "That's a different Google account. Pick the one you're signed in with.",
   // From the phone's Google module: 10 is DEVELOPER_ERROR (SHA-1 or web client ID doesn't match Firebase).

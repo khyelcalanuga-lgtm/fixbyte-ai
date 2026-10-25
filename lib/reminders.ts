@@ -1,14 +1,25 @@
 import { Platform } from "react-native";
-import * as Notifications from "expo-notifications";
+import Constants, { ExecutionEnvironment } from "expo-constants";
+import type * as NotificationsModule from "expo-notifications";
 
 // Repair reminders: a local notification two days after a diagnosis, asking how the repair went.
 // Phones only: the web version has no notifications.
 const AFTER_SECONDS = 2 * 24 * 60 * 60;
 const CHANNEL = "reminders";
 
+// expo-notifications is loaded on first use, never at import: Expo Go for Android lacks one of its native modules
+// (ExpoTopicSubscriptionModule, SDK 58), and loading the package there crashes the whole app. Reminders are off there.
+const unsupported = Platform.OS === "web" || (Platform.OS === "android" && Constants.executionEnvironment === ExecutionEnvironment.StoreClient);
+let loaded: typeof NotificationsModule | null = null;
+function notifications(): typeof NotificationsModule | null {
+  if (unsupported) return null;
+  return (loaded ??= require("expo-notifications"));
+}
+
 // Asks for permission when needed; false means reminders can't be shown here.
 export async function allowReminders(): Promise<boolean> {
-  if (Platform.OS === "web") return false;
+  const Notifications = notifications();
+  if (!Notifications) return false;
   try {
     const current = await Notifications.getPermissionsAsync();
     const granted = current.granted || (await Notifications.requestPermissionsAsync()).granted;
@@ -23,7 +34,8 @@ export async function allowReminders(): Promise<boolean> {
 }
 
 export async function remindLater(device: string | undefined, summary: string) {
-  if (!(await allowReminders())) return;
+  const Notifications = notifications();
+  if (!Notifications || !(await allowReminders())) return;
   await Notifications.scheduleNotificationAsync({
     content: { title: `How's your ${device || "device"}?`, body: `${summary}. Open FixByte AI to pick up the repair guide.` },
     trigger: { type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL, seconds: AFTER_SECONDS, channelId: CHANNEL },
@@ -31,5 +43,5 @@ export async function remindLater(device: string | undefined, summary: string) {
 }
 
 export function cancelReminders() {
-  if (Platform.OS !== "web") Notifications.cancelAllScheduledNotificationsAsync().catch(() => {});
+  notifications()?.cancelAllScheduledNotificationsAsync().catch(() => {});
 }

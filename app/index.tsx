@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useRef, useState, type ComponentProps, type ReactNode, type RefObject } from "react";
+import { forwardRef, useEffect, useRef, useState, type ComponentProps, type ComponentRef, type ReactNode, type RefObject } from "react";
 import {
   Alert,
   Animated,
@@ -267,7 +267,7 @@ export default function App() {
       return next;
     });
   const [tab, setTab] = useState<Tab>("home");
-  const glassTarget = useRef<View>(null); // the page under the glass tab bar (Android blurs this view) // My gadgets opens from Home's phone button; the tab bar does the rest
+  const glassTarget = useRef<ComponentRef<typeof View>>(null); // the page under the glass tab bar (Android blurs this view) // My gadgets opens from Home's phone button; the tab bar does the rest
   const [welcomed, setWelcomed] = useState(() => load(WELCOMED) === "yes"); // offline sign-in, used until Firebase is set up
   // The Firebase account; undefined while Firebase is still restoring a saved sign-in.
   const [user, setUser] = useState<User | null | undefined>(firebaseReady ? undefined : null);
@@ -313,8 +313,8 @@ export default function App() {
   const [showShops, setShowShops] = useState(false); // Repair Shops page, opened from "Find a repair shop"
   const [used, setUsed] = useState(0); // diagnoses started today, by this account
   const uid = user?.uid ?? "offline";
-  const scroll = useRef<ScrollView>(null);
-  const input = useRef<TextInput>(null);
+  const scroll = useRef<ComponentRef<typeof ScrollView>>(null);
+  const input = useRef<ComponentRef<typeof TextInput>>(null);
   const run = useRef(0); // bumped by cancel() so a late reply from a cancelled request is ignored
   const abort = useRef<AbortController | null>(null);
 
@@ -1314,7 +1314,7 @@ const NATIVE_GLASS = Platform.OS === "ios" && isLiquidGlassAvailable() && isGlas
 // One piece of Liquid Glass. On iOS 26 it's Apple's real material (lensing, and it lifts when touched).
 // Elsewhere: a flat blur of the page behind (Android reads it from `target`, the page wrapped in a BlurTargetView)
 // with almost no tint; on the web the backdrop is also refracted (lib/refraction.web.ts). Both get a hairline along the top and bottom edges that fades out toward the ends.
-function Glass({ target, style, children, onLayout }: { target: RefObject<View | null>; style?: ComponentProps<typeof View>["style"]; children: ReactNode; onLayout?: ComponentProps<typeof View>["onLayout"] }) {
+function Glass({ target, style, children, onLayout }: { target: RefObject<ComponentRef<typeof View> | null>; style?: ComponentProps<typeof View>["style"]; children: ReactNode; onLayout?: ComponentProps<typeof View>["onLayout"] }) {
   const [box, setBox] = useState({ w: 0, h: 0 }); // the web lens is shaped to this exact size
   if (NATIVE_GLASS) {
     return (
@@ -1354,7 +1354,7 @@ function GlassEdges() {
 // Bottom bar, floating over the page in glass: Home on its own, then My gadgets, History and Profile. The current
 // tab sits under a brighter glass lens that morphs between tabs: the edge facing the new tab springs out first and
 // the trailing edge follows, so it stretches toward the tab, then settles.
-function TabBar({ active, onTab, target }: { active: Tab; onTab: (t: Tab) => void; target: RefObject<View | null> }) {
+function TabBar({ active, onTab, target }: { active: Tab; onTab: (t: Tab) => void; target: RefObject<ComponentRef<typeof View> | null> }) {
   const [w, setW] = useState(0); // the tab pill's width
   const left = useRef(new Animated.Value(0)).current;
   const right = useRef(new Animated.Value(0)).current;
@@ -2780,7 +2780,7 @@ function Shops({ t, region, onBack }: { t: Extract<Turn, { role: "assistant" }>;
   const [routing, setRouting] = useState(false);
   const [routeError, setRouteError] = useState("");
   const [dragging, setDragging] = useState(false);
-  const scroll = useRef<ScrollView>(null);
+  const scroll = useRef<ComponentRef<typeof ScrollView>>(null);
 
   async function go(shop: Shop, mode: Mode) {
     setRouteError("");
