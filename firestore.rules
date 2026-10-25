@@ -31,6 +31,32 @@ service cloud.firestore {
           || (kind == 'gadgets' ? validGadget(request.resource.data.value) : validCheck(request.resource.data.value)));
     }
 
+    match /accounts/{uid}/conversations/{id} {
+      function owner() {
+        return request.auth != null && request.auth.uid == uid;
+      }
+      function validHead(value) {
+        return value is map && value.keys().hasAll(['version', 'parts'])
+          && value.keys().hasOnly(['version', 'parts'])
+          && value.version is string && value.version.matches('^[A-Za-z0-9_-]{1,128}$')
+          && value.parts is int && value.parts >= 0 && value.parts <= 10000;
+      }
+      allow read, delete: if owner();
+      allow create, update: if owner() && id.matches('^[A-Za-z0-9_-]{1,128}$')
+        && request.resource.data.keys().hasAll(['value']) && request.resource.data.keys().hasOnly(['value'])
+        && (request.resource.data.value == null || validHead(request.resource.data.value));
+
+      match /parts/{part} {
+        allow read, delete: if owner();
+        allow create, update: if owner() && part.matches('^[A-Za-z0-9_-]{1,150}$')
+          && request.resource.data.keys().hasAll(['version', 'index', 'data'])
+          && request.resource.data.keys().hasOnly(['version', 'index', 'data'])
+          && request.resource.data.version is string && request.resource.data.version.matches('^[A-Za-z0-9_-]{1,128}$')
+          && request.resource.data.index is int && request.resource.data.index >= 0 && request.resource.data.index < 10000
+          && request.resource.data.data is string && request.resource.data.data.size() <= 200000;
+      }
+    }
+
     match /profiles/{uid} {
       function owner() {
         return request.auth != null && request.auth.uid == uid;

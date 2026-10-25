@@ -1,16 +1,19 @@
 import { collection, doc, getDocs, onSnapshot, runTransaction, writeBatch, type Firestore } from "firebase/firestore";
 import { load, save } from "./store";
+import { saveConversations, validConversation, type Conversation } from "./conversations";
+import { deleteConversationParts, readCloudConversation, writeCloudConversation } from "./conversation-cloud";
 
 export type Gadget = { id: string; name: string; kind: string; added: string };
 export type CheckStatus = "fixed" | "checked" | "pro";
 export type Check = { id: string; gadget: string; date: string; title: string; detail: string; status: CheckStatus };
-type Library = { gadgets: Gadget; history: Check };
+type Library = { gadgets: Gadget; history: Check; conversations: Conversation };
 type Kind = keyof Library;
-type Change<T> = { value: T | null; createOnly?: boolean; patch?: Partial<T> };
+type Change<T> = { value: T | null; createOnly?: boolean; patch?: Partial<T>; before?: T; versions?: string[] };
 export type LibraryList<T> = { save: (before: T[], after: T[]) => void; stop: () => Promise<void> };
 export const newLibraryId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
 
 function validItem<K extends Kind>(kind: K, value: unknown): value is Library[K] {
+  if (kind === "conversations") return validConversation(value);
   if (!value || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
   const fields = kind === "gadgets" ? ["id", "name", "kind", "added"] : ["id", "gadget", "date", "title", "detail", "status"];
@@ -19,7 +22,7 @@ function validItem<K extends Kind>(kind: K, value: unknown): value is Library[K]
 }
 
 export function clearLibraryCache(uid: string) {
-  for (const kind of ["gadgets", "history"]) {
+  for (const kind of ["gadgets", "history", "conversations"]) {
     save(`${kind}-${uid}`, "[]");
     save(`sync-${kind}-${uid}`, "{}");
   }
@@ -39,7 +42,14 @@ export function openLibraryList<K extends Kind>(db: Firestore | null, uid: strin
     const data = JSON.parse(storedPending ?? "{}");
     for (const [id, change] of Object.entries(data)) {
       const c = change as Change<Item>;
-      if (/^[\w-]{1,128}$/.test(id) && c && (c.value === null || (validItem(kind, c.value) && c.value.id === id))) pending[id] = c;
+      if (/^[\w-]{1,128}$/.test(id) && c && (c.value === null || (validItem(kind, c.value) && c.value.id === id))) {
+        pending[id] = kind === "conversations" ? {
+          value: c.value,
+          createOnly: c.createOnly === true,
+          ...(c.before && validItem(kind, c.before) && c.before.id === id ? { before: c.before } : {}),
+          versions: Array.isArray(c.versions) ? c.versions.filter(value => typeof value === "string" && /^[\w-]{1,128}$/.test(value)) : [],
+        } : c;
+      }
     }
   } catch {}
   // Import old device-only records once. Existing cloud records (including deletions) always win.
@@ -49,7 +59,13 @@ export function openLibraryList<K extends Kind>(db: Firestore | null, uid: strin
   let unsubscribe: (() => void) | undefined;
   let retry: ReturnType<typeof setTimeout> | undefined;
   let flushing: Promise<void> | undefined;
-  const persist = () => save(pendingKey, JSON.stringify(pending));
+  let snapshotRun = 0;
+  const decoded = new Map<string, { head: string; value: Conversation | null | undefined }>();
+  const persist = () => {
+    const data = JSON.stringify(pending);
+    save(pendingKey, data);
+    if (kind === "conversations" && load(pendingKey) !== data) throw new Error("Conversation could not be saved. Check available storage and try again.");
+  };
   const publish = () => {
     if (stopped) return;
     const merged = new Map(remote);
@@ -59,14 +75,16 @@ export function openLibraryList<K extends Kind>(db: Firestore | null, uid: strin
       merged.set(id, change.patch && remote.has(id) ? existing === null ? null : { ...existing!, ...change.patch } : change.value);
     }
     local = [...merged.values()].filter((item): item is Item => item !== null);
-    local.sort((a, b) => b.id.localeCompare(a.id));
-    save(key, JSON.stringify(local));
-    onChange(local);
+    local.sort((a, b) => kind === "conversations" ? (b as Conversation).updatedAt.localeCompare((a as Conversation).updatedAt) : b.id.localeCompare(a.id));
+    try {
+      if (kind === "conversations") saveConversations(uid, local as Conversation[]);
+      else save(key, JSON.stringify(local));
+    } finally { onChange(local); }
   };
   const fail = () => {
     if (stopped) return;
     onError("Sync is unavailable. Your saved items stay on this device; we'll retry automatically.");
-    if (!retry) retry = setTimeout(() => { retry = undefined; if (!listening) listen(); flush(); }, 10000);
+    if (!retry) retry = setTimeout(() => { retry = undefined; if (!listening || kind === "conversations") listen(); flush(); }, 10000);
   };
   const flush = () => {
     if (!db || stopped || flushing || !Object.keys(pending).length) return;
@@ -75,7 +93,20 @@ export function openLibraryList<K extends Kind>(db: Firestore | null, uid: strin
         for (const [id, change] of Object.entries(pending)) {
           if (stopped) break;
           const ref = doc(db, "accounts", uid, kind, id);
-          await runTransaction(db, async transaction => {
+          if (kind === "conversations") {
+            const version = newLibraryId();
+            (change.versions ??= []).push(version);
+            persist();
+            const committed = await writeCloudConversation(ref, change as Change<Conversation>, version);
+            if (stopped) return;
+            snapshotRun++;
+            remote.set(id, committed.value as Item | null);
+            // Failed or replaced uploads belong to this edit, so cleanup never removes another device's upload.
+            change.versions.push(...committed.obsolete.filter(previous => !change.versions!.includes(previous)));
+            persist();
+            const obsolete = change.versions.filter(previous => previous !== committed.version);
+            if (obsolete.length) await deleteConversationParts(ref, obsolete);
+          } else await runTransaction(db, async transaction => {
             const existing = await transaction.get(ref);
             if (change.createOnly && existing.exists()) return;
             const value = existing.data()?.value;
@@ -87,6 +118,7 @@ export function openLibraryList<K extends Kind>(db: Firestore | null, uid: strin
           persist();
           publish();
         }
+        if (!stopped && kind === "conversations") listen();
         if (!stopped && listening) onError("");
       } catch { fail(); }
     })().finally(() => { flushing = undefined; if (!stopped && !retry) flush(); });
@@ -94,9 +126,28 @@ export function openLibraryList<K extends Kind>(db: Firestore | null, uid: strin
   const listen = () => {
     if (!db || stopped) return;
     unsubscribe?.();
+    snapshotRun++;
     listening = true;
     unsubscribe = onSnapshot(collection(db, "accounts", uid, kind), { includeMetadataChanges: true }, snapshot => {
       if (stopped || snapshot.metadata.fromCache) return;
+      const request = ++snapshotRun;
+      if (kind === "conversations") {
+        Promise.all(snapshot.docs.map(async document => {
+          const value = document.data().value;
+          const signature = JSON.stringify(value);
+          const cached = decoded.get(document.id);
+          const conversation = cached?.head === signature ? cached.value : await readCloudConversation(document.ref, value);
+          if (!stopped && request === snapshotRun) decoded.set(document.id, { head: signature, value: conversation });
+          return [document.id, conversation] as const;
+        }))
+          .then(records => {
+            if (stopped || request !== snapshotRun) return;
+            remote = new Map(records.filter((entry): entry is readonly [string, Conversation | null] => entry[1] !== undefined)) as Map<string, Item | null>;
+            publish();
+            if (!Object.keys(pending).length) onError("");
+          }).catch(() => { if (!stopped && request === snapshotRun) fail(); });
+        return;
+      }
       const records = new Map<string, Item | null>();
       for (const document of snapshot.docs) {
         const value = document.data().value;
@@ -107,8 +158,7 @@ export function openLibraryList<K extends Kind>(db: Firestore | null, uid: strin
       if (!Object.keys(pending).length) onError("");
     }, () => { listening = false; fail(); });
   };
-  persist();
-  publish();
+  try { persist(); publish(); } catch { fail(); }
   listen();
   flush();
   return {
@@ -122,22 +172,35 @@ export function openLibraryList<K extends Kind>(db: Firestore | null, uid: strin
         const beforeItem = previous.get(item.id);
         if (JSON.stringify(beforeItem) === JSON.stringify(item)) continue;
         const queued = pending[item.id];
+        if (kind === "conversations") {
+          const before = (queued?.before ?? beforeItem) as Conversation | undefined;
+          pending[item.id] = {
+            value: item,
+            // Sent photos never change; keep only one copy in the pending edit.
+            ...(before ? { before: { ...before, turns: before.turns.map(turn => turn.role === "user" ? { ...turn, image: undefined } : turn) } as Item } : {}),
+            versions: queued?.versions ?? [],
+          };
+          continue;
+        }
         const patch = beforeItem ? Object.fromEntries(Object.entries(item).filter(([key, value]) => value !== beforeItem[key as keyof Item])) as Partial<Item> : undefined;
         pending[item.id] = !beforeItem ? { value: item, createOnly: true }
           : { value: item, ...(patch && (!queued || queued.patch || queued.createOnly) ? { patch: { ...queued?.patch, ...patch } } : {}) };
       }
-      persist();
-      publish();
-      if (!db) { remote = new Map(local.map(item => [item.id, item])); pending = {}; persist(); }
-      flush();
+      try {
+        persist();
+        publish();
+        if (!db) { remote = new Map(local.map(item => [item.id, item])); pending = {}; persist(); onError(""); }
+        flush();
+      } catch (error) { fail(); throw error; }
     },
-    async stop() { stopped = true; unsubscribe?.(); if (retry) clearTimeout(retry); await flushing; },
+    async stop() { stopped = true; snapshotRun++; unsubscribe?.(); if (retry) clearTimeout(retry); await flushing; },
   };
 }
 
 export async function deleteLibrary(db: Firestore, uid: string) {
-  for (const kind of ["gadgets", "history"]) {
+  for (const kind of ["gadgets", "history", "conversations"]) {
     const snapshot = await getDocs(collection(db, "accounts", uid, kind));
+    if (kind === "conversations") for (const conversation of snapshot.docs) await deleteConversationParts(conversation.ref);
     for (let offset = 0; offset < snapshot.docs.length; offset += 400) {
       const batch = writeBatch(db);
       for (const document of snapshot.docs.slice(offset, offset + 400)) batch.delete(document.ref);

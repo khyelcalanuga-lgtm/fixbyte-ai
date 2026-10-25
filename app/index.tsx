@@ -1,6 +1,5 @@
 import { forwardRef, useEffect, useId, useRef, useState, type ComponentProps, type ComponentRef, type ReactNode, type RefObject } from "react";
 import {
-  Alert,
   AccessibilityInfo,
   Animated,
   AppState,
@@ -44,6 +43,7 @@ import { Poppins_600SemiBold } from "@expo-google-fonts/poppins/600SemiBold";
 import { apiFetch } from "../lib/api";
 import { DAILY_LIMIT, LIMIT_MESSAGE, SYNC_MESSAGE, recordSharedUse, recordUse, resetUsage, usedToday, watchSharedUsage } from "../lib/usage";
 import { load, save } from "../lib/store";
+import { saveConversations, type Conversation, type Diagnosis, type Question, type Turn } from "../lib/conversations";
 import { clearLibraryCache, newLibraryId, openLibraryList, type LibraryList, type Gadget, type Check, type CheckStatus } from "../lib/library";
 import { getFirestore } from "firebase/firestore";
 import { AVATAR_COLORS, loadAvatarColor, resetAvatarColorCache, saveAvatarColor, watchAvatarColor } from "../lib/profile";
@@ -60,23 +60,6 @@ import {
 } from "firebase/auth";
 import Constants from "expo-constants";
 
-type Question = { question: string; options: string[] };
-type Diagnosis = {
-  summary: string;
-  title: string;
-  category: "Hardware" | "Software" | "Both";
-  difficulty: "Beginner-safe" | "Some skill" | "Pro repair";
-  causes: { name: string; detail: string }[];
-  steps: { title: string; detail: string; tools: string[]; warning: string }[]; // the Repair Guide
-  minutes: number;
-  // Shown instead of the above on the "needs a professional" page (difficulty "Pro repair").
-  problem: string;
-  why: string;
-  risk: string;
-  confidence: number;
-  now: { icon: string; text: string }[];
-  shopServices: string[]; // filter chips on the Repair Shops page
-};
 type FeatherName = keyof typeof FeatherOutline.glyphMap;
 
 // Every icon is drawn solid with rounded corners: the app names icons the Feather way, and each one is drawn
@@ -161,22 +144,6 @@ function Feather({ name, ...props }: ComponentProps<typeof FeatherOutline>) {
   const solid = SOLID[name as FeatherName];
   return solid ? <Ionicons name={solid} {...props} /> : <FeatherOutline name={name} {...props} />;
 }
-// What the screen shows. toApi() turns these into OpenAI-style messages for the API route.
-type Turn =
-  | { role: "user"; image?: string; text?: string; answers?: string }
-  | {
-      role: "assistant";
-      text: string;
-      questions: Question[];
-      picked: (string | undefined)[];
-      device?: string; // short status labels for the Diagnosing screen
-      deviceType?: string;
-      finding?: string;
-      diagnosis?: Diagnosis; // set on the verdict turn; shown on the Diagnosis page
-      seconds?: number; // how long the diagnosis request took
-      saved?: boolean;
-      check?: string; // id of the History check this verdict was saved as
-    };
 type Part = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
 // Diagnosing screen state. stage = the 1-based checklist row in progress; 5 = all done.
 type Diag = { photo: boolean; device?: string; finding?: string; software?: string; stage: number };
@@ -295,21 +262,23 @@ export default function App() {
   const [history, setHistory] = useState<Check[]>([]);
   const [libraryErrors, setLibraryErrors] = useState({ gadgets: "", history: "" });
   const [libraryVersion, setLibraryVersion] = useState(0);
-  const library = useRef<{ uid: string; gadgets: LibraryList<Gadget>; history: LibraryList<Check> } | null>(null);
+  const library = useRef<{ uid: string; gadgets: LibraryList<Gadget>; history: LibraryList<Check>; conversations: LibraryList<Conversation> } | null>(null);
   useEffect(() => {
     setLibraryErrors({ gadgets: "", history: "" });
+    setConversationError("");
     const db = user ? getFirestore(firebaseAuth().app) : null;
     const current = {
       uid,
       gadgets: openLibraryList(db, uid, "gadgets", setGadgets, message => setLibraryErrors(errors => ({ ...errors, gadgets: message }))),
       history: openLibraryList(db, uid, "history", setHistory, message => setLibraryErrors(errors => ({ ...errors, history: message }))),
+      conversations: openLibraryList(db, uid, "conversations", items => setConversationState({ uid, items }), setConversationError),
     };
     library.current = current;
-    return () => { void current.gadgets.stop(); void current.history.stop(); };
+    return () => { void current.gadgets.stop(); void current.history.stop(); void current.conversations.stop(); };
   }, [uid, libraryVersion]);
   const saveGadgets = (list: Gadget[]) => { if (library.current?.uid === uid) library.current.gadgets.save(gadgets, list); };
   const saveHistory = (list: Check[]) => { if (library.current?.uid === uid) library.current.history.save(history, list); };
-  const stopLibrary = async () => { await Promise.all([library.current?.gadgets.stop(), library.current?.history.stop()]); };
+  const stopLibrary = async () => { await Promise.all([library.current?.gadgets.stop(), library.current?.history.stop(), library.current?.conversations.stop()]); };
   const [forGadget, setForGadget] = useState<Gadget | null>(null); // "Check this gadget": the chat is about this one
   // A saved diagnosis that matched no gadget, waiting for "Which gadget is this?".
   const [filing, setFiling] = useState<{ turn: number; id: string; device?: string; kind: string } | null>(null);
@@ -317,6 +286,10 @@ export default function App() {
   const [authMode, setAuthMode] = useState<AuthMode | null>(null); // Sign in / Create account, opened from Welcome
   const [setup, setSetup] = useState(false); // the new-account questions, shown once after Create account
   const [turns, setTurns] = useState<Turn[]>([]);
+  const [conversationId, setConversationId] = useState(newLibraryId);
+  const [conversationState, setConversationState] = useState<{ uid: string; items: Conversation[] }>({ uid: "", items: [] });
+  const [conversationError, setConversationError] = useState("");
+  const [showConversations, setShowConversations] = useState(false);
   const [text, setText] = useState("");
   const [image, setImage] = useState<string | null>(null); // data URL
   const [attachOpen, setAttachOpen] = useState(false); // the plus button's camera / gallery menu
@@ -333,6 +306,26 @@ export default function App() {
   const input = useRef<ComponentRef<typeof TextInput>>(null);
   const run = useRef(0); // bumped by cancel() so a late reply from a cancelled request is ignored
   const abort = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    reset();
+    setTab("home");
+  }, [uid]);
+
+  // Only message changes save a snapshot; updating the saved list must not trigger another save.
+  useEffect(() => {
+    if (conversationState.uid !== uid || library.current?.uid !== uid || busy || !turns.length) return;
+    const previous = conversationState.items.find(item => item.id === conversationId);
+    if (previous?.gadget === (forGadget?.id ?? null) && JSON.stringify(previous.turns) === JSON.stringify(turns)) return;
+    const now = new Date().toISOString();
+    const conversation: Conversation = { id: conversationId, startedAt: startedAt?.toISOString() ?? now, updatedAt: now, gadget: forGadget?.id ?? null, turns };
+    const items = [conversation, ...conversationState.items.filter(item => item.id !== conversationId)];
+    try {
+      library.current.conversations.save(conversationState.items, items);
+    } catch (error) {
+      setConversationError(error instanceof Error ? error.message : "Conversation could not be saved.");
+    }
+  }, [uid, conversationId, turns, busy, startedAt, forGadget?.id]);
 
   const last = turns[turns.length - 1];
   const pending = last?.role === "assistant" && last.questions.length > 0 && !busy ? last : null;
@@ -424,7 +417,15 @@ export default function App() {
   }
 
   function reset() {
-    if (busy) return;
+    run.current++;
+    abort.current?.abort();
+    setBusy(false);
+    setDiag(null);
+    setConversationId(newLibraryId());
+    setShowConversations(false);
+    setAttachOpen(false);
+    setGuideStep(null);
+    setShowShops(false);
     setForGadget(null);
     setFiling(null);
     setAskFixed(null);
@@ -471,12 +472,23 @@ export default function App() {
     setTurns((ts) => ts.map((t, j) => (j === i && t.role === "assistant" ? { ...t, saved: !t.saved } : t)));
   }
 
-  function menu() {
-    if (Platform.OS === "web") return reset();
-    Alert.alert("Diagnosis", undefined, [
-      { text: "Start a new diagnosis", onPress: reset },
-      { text: "Cancel", style: "cancel" },
-    ]);
+  function openConversations() {
+    Keyboard.dismiss();
+    setAttachOpen(false);
+    setShowConversations(true);
+  }
+
+  function openConversation(conversation: Conversation, savedOnly = false) {
+    reset();
+    setConversationId(conversation.id);
+    setTurns(conversation.turns);
+    setStartedAt(new Date(conversation.startedAt));
+    setForGadget(gadgets.find(gadget => gadget.id === conversation.gadget) ?? null);
+    if (savedOnly) {
+      const index = conversation.turns.findLastIndex(turn => turn.role === "assistant" && turn.diagnosis && turn.saved);
+      if (index >= 0) setResultIdx(index);
+    }
+    setTab("home");
   }
 
   function choose(qi: number, option: string) {
@@ -496,7 +508,7 @@ export default function App() {
     if (busy || (!text.trim() && !image && !answers)) return;
     if (!turns.length && limitReached()) return;
 
-    const next: Turn[] = [...turns, { role: "user", image: image ?? undefined, text: text.trim() || undefined, answers }];
+    const next: Turn[] = [...turns, { id: newLibraryId(), role: "user", image: image ?? undefined, text: text.trim() || undefined, answers }];
     setTurns(next);
     setResultIdx(null); // a follow-up from the Diagnosis page continues in the chat
     setStartedAt((d) => d ?? new Date());
@@ -559,6 +571,7 @@ export default function App() {
       setTurns([
         ...next,
         {
+          id: newLibraryId(),
           role: "assistant",
           text: data.text,
           questions,
@@ -611,7 +624,7 @@ export default function App() {
   }
 
   // Firebase restores a saved sign-in in a moment; the start page covers it, so Welcome never flashes by.
-  if (!mounted || !fontsLoaded || user === undefined) return <StartPage />;
+  if (!mounted || !fontsLoaded || user === undefined || conversationState.uid !== uid) return <StartPage />;
 
   const home = turns.length === 0 && !busy;
   const out = home && used !== null && used >= DAILY_LIMIT;
@@ -649,6 +662,15 @@ export default function App() {
               setTab("home");
             }}
           />
+        ) : showConversations ? (
+          <Conversations
+            items={conversationState.uid === uid ? conversationState.items : []}
+            error={conversationError}
+            synced={!!user}
+            onBack={() => setShowConversations(false)}
+            onOpen={openConversation}
+            onNew={() => { reset(); setTab("home"); }}
+          />
         ) : tab === "gadgets" ? (
           <Gadgets
             gadgets={gadgets}
@@ -666,7 +688,7 @@ export default function App() {
             }}
           />
         ) : tab === "history" ? (
-          <History gadgets={gadgets} history={history} syncError={libraryErrors.history || libraryErrors.gadgets} onChange={saveHistory} onDiagnose={() => setTab("home")} />
+          <History gadgets={gadgets} history={history} syncError={libraryErrors.history || libraryErrors.gadgets} onChange={saveHistory} onDiagnose={() => { reset(); setTab("home"); }} onConversations={openConversations} />
         ) : tab === "profile" ? (
           <Profile
             key={uid}
@@ -691,6 +713,10 @@ export default function App() {
               finally { if (firebaseAuth().currentUser) setLibraryVersion(version => version + 1); }
             }}
             onErase={async () => {
+              saveConversations(uid, []);
+              // Account deletion may already have loaded the signed-out session.
+              setConversationState(current => current.uid === uid ? { uid, items: [] } : current);
+              reset();
               void stopLibrary();
               clearLibraryCache(uid);
               resetAvatarColorCache(user ?? null);
@@ -730,27 +756,30 @@ export default function App() {
                 onBack={() => setResultIdx(null)}
                 onGadgets={() => setTab("gadgets")}
                 top={
-                  filing && filing.turn === resultIdx ? (
-                    <FileCheck
-                      device={filing.device}
-                      gadgets={gadgets}
-                      onPick={(g) => attachCheck(filing.id, g.id)}
-                      onAdd={() => {
-                        const g = newGadget(filing.device || "My device", filing.kind);
-                        attachCheck(filing.id, g.id);
-                        saveGadgets([g, ...gadgets]);
-                      }}
-                      onSkip={() => setFiling(null)}
-                    />
-                  ) : askFixed && askFixed === result.check ? (
-                    <AskFixed
-                      gadget={gadgets.find((g) => g.id === history.find((c) => c.id === askFixed)?.gadget)?.name}
-                      onAnswer={(fixed) => {
-                        if (fixed) saveHistory(history.map((c) => (c.id === askFixed ? { ...c, status: "fixed" } : c)));
-                        setAskFixed(null);
-                      }}
-                    />
-                  ) : undefined
+                  <>
+                    {!!conversationError && <Text style={s.error} accessibilityRole="alert">{conversationError}</Text>}
+                    {filing && filing.turn === resultIdx ? (
+                      <FileCheck
+                        device={filing.device}
+                        gadgets={gadgets}
+                        onPick={(g) => attachCheck(filing.id, g.id)}
+                        onAdd={() => {
+                          const g = newGadget(filing.device || "My device", filing.kind);
+                          attachCheck(filing.id, g.id);
+                          saveGadgets([g, ...gadgets]);
+                        }}
+                        onSkip={() => setFiling(null)}
+                      />
+                    ) : askFixed && askFixed === result.check ? (
+                      <AskFixed
+                        gadget={gadgets.find((g) => g.id === history.find((c) => c.id === askFixed)?.gadget)?.name}
+                        onAnswer={(fixed) => {
+                          if (fixed) saveHistory(history.map((c) => (c.id === askFixed ? { ...c, status: "fixed" } : c)));
+                          setAskFixed(null);
+                        }}
+                      />
+                    ) : undefined}
+                  </>
                 }
               />
             ) : home ? (
@@ -773,7 +802,12 @@ export default function App() {
                     <Card icon="camera" title="Scan a photo" subtitle="AI spots the damage" onPress={scan} />
                     <Card icon="message-square" title="Describe it" subtitle="Type the symptoms" onPress={() => input.current?.focus()} />
                   </View>
-                  {!!error && <Text style={s.error}>{error}</Text>}
+                  <Pressable onPress={openConversations} style={s.conversationLink} accessibilityRole="button" accessibilityLabel="Previous conversations">
+                    <Feather name="clock" size={15} color={tone("rgba(0,0,0,0.6)")} />
+                    <Text style={s.usageUpgradeText}>Previous conversations</Text>
+                    <Feather name="chevron-right" size={15} color={tone("rgba(0,0,0,0.6)")} />
+                  </Pressable>
+                  {!!(error || conversationError) && <Text style={s.error} accessibilityRole="alert">{error || conversationError}</Text>}
                 </ScrollView>
               </>
             ) : (
@@ -782,9 +816,9 @@ export default function App() {
                   <Pressable onPress={reset} style={s.circle} accessibilityLabel="Back">
                     <Feather name="arrow-left" size={20} color={tone("#000")} />
                   </Pressable>
-                  <Text style={s.title}>New diagnosis</Text>
-                  <Pressable onPress={menu} style={s.circle} accessibilityLabel="More options">
-                    <Feather name="more-horizontal" size={20} color={tone("#000")} />
+                  <Text style={s.title}>Diagnosis chat</Text>
+                  <Pressable onPress={openConversations} disabled={busy} style={[s.circle, busy && s.disabled]} accessibilityLabel="Previous conversations" accessibilityRole="button">
+                    <Feather name="clock" size={20} color={tone("#000")} />
                   </Pressable>
                 </View>
                 {time && <Text style={s.time}>TODAY, {time}</Text>}
@@ -860,7 +894,7 @@ export default function App() {
                       <Typing />
                     </Pop>
                   )}
-                  {!!error && <Text style={s.error}>{error}</Text>}
+                  {!!(error || conversationError) && <Text style={s.error} accessibilityRole="alert">{error || conversationError}</Text>}
                 </ScrollView>
               </>
             )}
@@ -960,7 +994,7 @@ export default function App() {
         )}
       </BlurTargetView>
       {/* One bar for all three tabs, so its pill can morph from tab to tab instead of being redrawn. */}
-      {signedIn && !setup && tab !== "home" && <TabBar active={tab} onTab={setTab} target={glassTarget} />}
+      {signedIn && !setup && !showConversations && tab !== "home" && <TabBar active={tab} onTab={setTab} target={glassTarget} />}
       {start && <StartPage onDone={() => setStart(false)} />}
     </SafeAreaView>
   );
@@ -1581,7 +1615,7 @@ const HELP: Doc = [
 const PRIVACY: Doc = [
   { heading: "What you send", body: "Photos and descriptions you send go through FixByte's server to an AI provider (Google Gemini, Groq, Mistral or OpenRouter) to produce your diagnosis. FixByte's server doesn't keep them; each provider handles them under its own privacy policy." },
   { heading: "Your location", body: "Used only to find nearby repair shops and directions. Shop searches go through FixByte's server to OpenStreetMap services, and directions come from OpenStreetMap's routing service. Your location isn't stored." },
-  { heading: "Saved data", body: "Settings stay on this device. When signed in, your gadgets, diagnosis history, avatar color and daily diagnosis count are saved in Firebase and synced across devices." },
+  { heading: "Saved data", body: "Settings stay on this device. When signed in, your full conversations and attached photos, saved diagnoses, gadgets, diagnosis history, avatar color and daily diagnosis count are saved in Firebase and synced across devices. An offline copy stays on this device." },
   { heading: "What we don't do", body: "No ads, no tracking, and your data isn't sold." },
   { heading: "Contact", body: `Questions about your privacy: ${SUPPORT_EMAIL}` },
 ];
@@ -1792,7 +1826,7 @@ function Profile({
           <Text style={[s.googleText, s.pSignOutText]}>{confirmErase ? "Tap again to erase" : "Erase data on this device"}</Text>
         </Pressable>
         <Text style={[s.msgText, s.dim, s.pHint]}>
-          Erasing removes saved data from this device and signs you out. Your account, synced gadgets and history, avatar color, and daily count stay.
+          Erasing removes saved data from this device and signs you out. Your account, synced conversations, gadgets and history, avatar color, and daily count stay.
         </Text>
         {user && (
           <>
@@ -2108,6 +2142,71 @@ function Toggle({ on, onChange, label }: { on: boolean; onChange: (on: boolean) 
   );
 }
 
+function Conversations({ items, error, synced, onBack, onOpen, onNew }: {
+  items: Conversation[];
+  error: string;
+  synced: boolean;
+  onBack: () => void;
+  onOpen: (conversation: Conversation, savedOnly: boolean) => void;
+  onNew: () => void;
+}) {
+  const [savedOnly, setSavedOnly] = useState(false);
+  const shown = savedOnly ? items.filter(item => item.turns.some(turn => turn.role === "assistant" && turn.diagnosis && turn.saved)) : items;
+  return (
+    <View style={s.flex}>
+      <View style={s.header}>
+        <Pressable onPress={onBack} style={s.circle} accessibilityLabel="Back from conversations" accessibilityRole="button">
+          <Feather name="arrow-left" size={20} color={tone("#000")} />
+        </Pressable>
+        <Text style={s.title}>Conversations</Text>
+        <Pressable onPress={onNew} style={s.circle} accessibilityLabel="New conversation" accessibilityRole="button">
+          <Feather name="plus" size={20} color={tone("#000")} />
+        </Pressable>
+      </View>
+      <ScrollView style={s.flex} contentContainerStyle={s.log}>
+        <Text style={s.hxDetail}>{synced ? "Synced with your account" : "Saved on this device"}</Text>
+        <View style={s.chips}>
+          {[false, true].map(saved => (
+            <Pressable key={String(saved)} onPress={() => setSavedOnly(saved)} style={[s.filter, savedOnly === saved && s.filterOn]} accessibilityRole="button" accessibilityLabel={saved ? "Saved diagnoses" : "All conversations"} accessibilityState={{ selected: savedOnly === saved }}>
+              <Text style={[s.filterText, savedOnly === saved && s.tagTextLight]}>{saved ? "Saved" : "All chats"}</Text>
+            </Pressable>
+          ))}
+        </View>
+        {!!error && <Text style={s.error} accessibilityRole="alert">{error}</Text>}
+        {!shown.length && (
+          <View style={s.gEmptyCard}>
+            <Text style={s.gEmptyTitle}>{savedOnly ? "No saved diagnoses yet" : "No conversations yet"}</Text>
+            <Text style={s.gEmptyBody}>{savedOnly ? "Tap Save on a diagnosis to find it here." : "Your chats will appear here as you talk. Use the + button to start a conversation."}</Text>
+          </View>
+        )}
+        {shown.map(conversation => {
+          const first = conversation.turns.find(turn => turn.role === "user");
+          const title = first?.text?.trim() || "Photo diagnosis";
+          const last = conversation.turns.at(-1);
+          return (
+            <Pressable key={conversation.id} onPress={() => onOpen(conversation, savedOnly)} style={s.hxEntry} accessibilityRole="button" accessibilityLabel={`Open conversation: ${title}`}>
+              <View style={s.gTop}>
+                <View style={[s.hxBadge, { backgroundColor: surface("#F3F3F3") }]}>
+                  <Feather name="message-square" size={18} color={tone("#000")} />
+                </View>
+                <View style={s.gText}>
+                  <Text style={s.hxTitle} numberOfLines={2}>{title}</Text>
+                  <Text style={s.hxDetail} numberOfLines={2}>{last?.text || "Photo attached"}</Text>
+                </View>
+                <Feather name="chevron-right" size={18} color={tone("rgba(0,0,0,0.4)")} />
+              </View>
+              <View style={s.hxFoot}>
+                <Text style={[s.hxMetaText, s.flex]}>{shortDate(conversation.updatedAt)} · {new Date(conversation.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</Text>
+                <Text style={s.hxMetaText}>{conversation.turns.length} messages</Text>
+              </View>
+            </Pressable>
+          );
+        })}
+      </ScrollView>
+    </View>
+  );
+}
+
 // History: a month calendar marking each day's checks for one gadget, and the list of those checks.
 // Checks sync to the account when a diagnosis finishes. "fixed" comes from the repair
 // guide's "Did it work?".
@@ -2135,12 +2234,14 @@ function History({
   syncError,
   onChange,
   onDiagnose,
+  onConversations,
 }: {
   gadgets: Gadget[];
   history: Check[];
   syncError: string;
   onChange: (list: Check[]) => void;
   onDiagnose: () => void;
+  onConversations: () => void;
 }) {
   const [only, setOnly] = useState<string | null>(null); // gadget filter; null = all gadgets
   const checks = history.filter((c) => !only || c.gadget === only).sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id));
@@ -2220,6 +2321,9 @@ function History({
               : "Every check and fix, by date"}
           </Text>
         </View>
+        <Pressable onPress={onConversations} style={s.circle} accessibilityLabel="Previous conversations" accessibilityRole="button">
+          <Feather name="message-square" size={20} color={tone("#000")} />
+        </Pressable>
       </View>
 
       <ScrollView style={s.flex} contentContainerStyle={s.gList}>
@@ -3276,11 +3380,15 @@ function Bookmark({ saved, big, onPress }: { saved: boolean; big?: boolean; onPr
   return (
     <Pressable
       onPress={onPress}
-      style={[s.circle, big && s.bigCircle, saved && s.savedBtn]}
-      accessibilityLabel={saved ? "Remove bookmark" : "Bookmark diagnosis"}
+      style={[s.saveBtn, big && s.bigSaveBtn, saved && s.savedBtn]}
+      accessibilityLabel={saved ? "Remove saved diagnosis" : "Save diagnosis"}
+      accessibilityRole="button"
+      accessibilityHint="Find saved diagnoses in Previous conversations under Saved."
       accessibilityState={{ selected: saved }}
+      aria-pressed={saved}
     >
-      <Feather name="bookmark" size={big ? 22 : 20} color={saved ? tone("#fff") : tone("#000")} />
+      <Ionicons name={saved ? "bookmark" : "bookmark-outline"} size={18} color={saved ? tone("#fff") : tone("#000")} />
+      <Text style={[s.saveText, saved && s.tagTextLight]}>{saved ? "Saved" : "Save"}</Text>
     </Pressable>
   );
 }
@@ -3796,6 +3904,7 @@ function makeStyles() {
   time: { fontFamily: "Poppins_400Regular", fontSize: 11, lineHeight: 16, textAlign: "center", color: tone("#000"), marginTop: 4 },
 
   home: { flexGrow: 1, justifyContent: "center", paddingHorizontal: 20, paddingVertical: 20 },
+  conversationLink: { alignSelf: "center", minHeight: 44, flexDirection: "row", alignItems: "center", gap: 7, marginTop: 14 },
   start: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, zIndex: 10, backgroundColor: surface("#fff"), alignItems: "center", justifyContent: "center" },
   startLogo: { transform: [{ scale: 1.8 }] },
   // Welcome page, measured from the mockup. The logo area and the gap above the button split the spare
@@ -4139,7 +4248,7 @@ function makeStyles() {
   nowText: { flex: 1, fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 20, color: tone("#000") },
   disclaimer: { fontFamily: "Poppins_400Regular", fontSize: 13, lineHeight: 18, textAlign: "center", color: tone("rgba(0,0,0,0.4)"), marginBottom: 12, paddingHorizontal: 20 },
   shopBtn: { height: 58 },
-  shopText: { fontFamily: "Poppins_500Medium", fontSize: 15, color: tone("#fff") },
+  shopText: { fontFamily: "Poppins_500Medium", fontSize: 15, lineHeight: 22, includeFontPadding: false, textAlignVertical: "center", textAlign: "center", color: tone("#fff") },
   bigCircle: { width: 58, height: 58 },
 
   caseCard: { flexDirection: "row", alignItems: "center", gap: 18, backgroundColor: surface("#000"), borderRadius: 25, paddingHorizontal: 24, paddingVertical: 20 },
@@ -4148,7 +4257,7 @@ function makeStyles() {
   casePill: { height: 20, paddingHorizontal: 12, borderRadius: 100, backgroundColor: GREEN, justifyContent: "center" },
   casePillText: { fontFamily: "Poppins_400Regular", fontSize: 11, color: ON_ACCENT },
   nearBox: { flexDirection: "row", alignItems: "center", gap: 15, height: 44, paddingHorizontal: 20, marginTop: 10, borderRadius: 100, backgroundColor: surface("#fff"), borderWidth: 1, borderColor: tone("rgba(0,0,0,0.07)") },
-  nearInput: { flex: 1, height: "100%", fontFamily: "Poppins_400Regular", fontSize: 15, color: tone("#000") },
+  nearInput: { flex: 1, height: "100%", paddingVertical: 0, includeFontPadding: false, textAlignVertical: "center", fontFamily: "Poppins_400Regular", fontSize: 15, lineHeight: 22, color: tone("#000") },
   map: { width: "100%", height: 231, borderRadius: 25, marginTop: 10, backgroundColor: surface("#E8E8E8"), overflow: "hidden" },
   filters: { marginTop: 10, marginHorizontal: -20 },
   filterRow: { gap: 10, paddingHorizontal: 20 },
@@ -4200,6 +4309,9 @@ function makeStyles() {
   guideBtn: { flex: 1, height: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, borderRadius: 100, backgroundColor: surface("#000") },
   guideText: { fontFamily: "Poppins_400Regular", fontSize: 15, color: tone("#fff") },
   savedBtn: { backgroundColor: surface("#000") },
+  saveBtn: { minWidth: 88, height: 44, paddingHorizontal: 12, borderRadius: 100, backgroundColor: surface("#fff"), flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6 },
+  bigSaveBtn: { height: 58 },
+  saveText: { fontFamily: "Poppins_500Medium", fontSize: 12, lineHeight: 18, includeFontPadding: false, textAlignVertical: "center", color: tone("#000") },
 
   cancel: { alignSelf: "center", paddingHorizontal: 24, paddingVertical: 16, marginBottom: 12 },
   cancelText: { fontFamily: "Poppins_600SemiBold", fontSize: 15, color: tone("#000") },
