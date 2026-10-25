@@ -764,7 +764,7 @@ export default function App() {
                     <Avatar settings={settings} color={avatarColor} size={45} />
                   </Pressable>
                 </View>
-                <View style={s.home}>
+                <ScrollView style={s.flex} contentContainerStyle={s.home} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
                   <Logo />
                   <Text style={s.greeting}>
                     {settings.name.trim() ? `${greeting()}, ${settings.name.trim().split(/\s+/)[0]}` : greeting()}
@@ -774,7 +774,7 @@ export default function App() {
                     <Card icon="message-square" title="Describe it" subtitle="Type the symptoms" onPress={() => input.current?.focus()} />
                   </View>
                   {!!error && <Text style={s.error}>{error}</Text>}
-                </View>
+                </ScrollView>
               </>
             ) : (
               <>
@@ -3795,7 +3795,7 @@ function makeStyles() {
   title: { fontFamily: "Poppins_600SemiBold", fontSize: 15, lineHeight: 22, color: tone("#000") },
   time: { fontFamily: "Poppins_400Regular", fontSize: 11, lineHeight: 16, textAlign: "center", color: tone("#000"), marginTop: 4 },
 
-  home: { flex: 1, justifyContent: "center", paddingHorizontal: 20 },
+  home: { flexGrow: 1, justifyContent: "center", paddingHorizontal: 20, paddingVertical: 20 },
   start: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, zIndex: 10, backgroundColor: surface("#fff"), alignItems: "center", justifyContent: "center" },
   startLogo: { transform: [{ scale: 1.8 }] },
   // Welcome page, measured from the mockup. The logo area and the gap above the button split the spare
