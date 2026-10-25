@@ -596,7 +596,7 @@ export default function App() {
   }
 
   // Firebase restores a saved sign-in in a moment; the start page covers it, so Welcome never flashes by.
-  if (!fontsLoaded || user === undefined) return <StartPage />;
+  if (!mounted || !fontsLoaded || user === undefined) return <StartPage />;
 
   const home = turns.length === 0 && !busy;
   const out = home && used !== null && used >= DAILY_LIMIT;
@@ -3632,7 +3632,7 @@ function makeStyles() {
   welcomeBody: { fontFamily: "Poppins_400Regular", fontSize: 15, lineHeight: 23, textAlign: "center", color: tone("#000"), marginTop: 14, paddingHorizontal: 6 },
   welcomeGap: { flex: 1 },
   welcomeBtn: { height: 59, borderRadius: 100, backgroundColor: surface("#000"), alignItems: "center", justifyContent: "center" },
-  welcomeBtnText: { fontFamily: "Poppins_600SemiBold", fontSize: 15, color: tone("#fff") },
+  welcomeBtnText: { fontFamily: "Poppins_600SemiBold", fontSize: 15, lineHeight: 22, includeFontPadding: false, textAlignVertical: "center", color: tone("#fff") },
   // My gadgets and the tab bar, measured from the mockup.
   gHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 20, paddingTop: 15 },
   gTitle: { fontFamily: "Poppins_600SemiBold", fontSize: 26, lineHeight: 34, color: tone("#000") },
@@ -3821,10 +3821,10 @@ function makeStyles() {
   seg: { flexDirection: "row", height: 59, marginTop: 22, padding: 7, borderRadius: 100, backgroundColor: surface("#fff") },
   segPill: { position: "absolute", top: 7, bottom: 7, left: 7, borderRadius: 100, backgroundColor: surface("#000") },
   segItem: { flex: 1, alignItems: "center", justifyContent: "center" },
-  segText: { fontFamily: "Poppins_600SemiBold", fontSize: 15, color: tone("#000") },
+  segText: { fontFamily: "Poppins_600SemiBold", fontSize: 15, lineHeight: 22, includeFontPadding: false, textAlignVertical: "center", color: tone("#000") },
   segTextOn: { color: tone("#fff") },
   authLabel: { fontFamily: "Poppins_400Regular", fontSize: 15, lineHeight: 22, color: tone("#000"), marginTop: 20, marginBottom: 10 },
-  authInput: { height: 58, paddingHorizontal: 20, borderRadius: 100, backgroundColor: surface("#fff"), borderWidth: 1, borderColor: tone("rgba(0,0,0,0.05)"), fontFamily: "Poppins_400Regular", fontSize: 15, color: tone("#000") },
+  authInput: { height: 58, paddingHorizontal: 20, paddingVertical: 0, textAlignVertical: "center", includeFontPadding: false, borderRadius: 100, backgroundColor: surface("#fff"), borderWidth: 1, borderColor: tone("rgba(0,0,0,0.05)"), fontFamily: "Poppins_400Regular", fontSize: 15, lineHeight: 22, color: tone("#000") },
   authInputSecret: { paddingRight: 52 }, // room for the eye button
   eye: { position: "absolute", right: 20, top: 0, bottom: 0, justifyContent: "center" },
   forgot: { alignSelf: "flex-end", marginTop: 10 },
@@ -3835,7 +3835,7 @@ function makeStyles() {
   dividerLine: { flex: 1, height: 1, backgroundColor: surface("rgba(0,0,0,0.2)") },
   dividerText: { fontFamily: "Poppins_400Regular", fontSize: 14, color: tone("rgba(0,0,0,0.5)"), marginHorizontal: 18 },
   googleBtn: { flexDirection: "row", gap: 10, height: 59, borderRadius: 100, backgroundColor: surface("#fff"), alignItems: "center", justifyContent: "center" },
-  googleText: { fontFamily: "Poppins_600SemiBold", fontSize: 15, color: tone("#000") },
+  googleText: { fontFamily: "Poppins_600SemiBold", fontSize: 15, lineHeight: 22, includeFontPadding: false, textAlignVertical: "center", color: tone("#000") },
   welcomeLink: { fontFamily: "Poppins_400Regular", fontSize: 12, textAlign: "center", color: tone("rgba(0,0,0,0.5)"), marginTop: 12 }, // the Home logo, scaled up to the start page's size
   // Centered horizontally, with the circle's middle ~90pt above the bottom (behind the message bar).
   glowClip: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, overflow: "hidden" },
@@ -3849,7 +3849,7 @@ function makeStyles() {
   logoD: { flex: 1, borderRadius: 3.5, borderTopRightRadius: 25.5, borderBottomRightRadius: 25.5, backgroundColor: tone("#000") },
   cards: { flexDirection: "row", gap: 10 },
   card: { flex: 1, backgroundColor: surface("#fff"), borderRadius: 25, paddingVertical: 20, paddingHorizontal: 18 },
-  cardIcon: { marginBottom: 18 },
+  cardIcon: { marginBottom: 8 },
   cardTitle: { fontFamily: "Poppins_500Medium", fontSize: 15, lineHeight: 22, color: tone("#000") },
   cardSub: { fontFamily: "Poppins_400Regular", fontSize: 12, lineHeight: 20, color: tone("rgba(0,0,0,0.5)") },
 
