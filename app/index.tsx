@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useRef, useState, type ComponentProps, type ComponentRef, type ReactNode, type RefObject } from "react";
+import { forwardRef, useEffect, useId, useRef, useState, type ComponentProps, type ComponentRef, type ReactNode, type RefObject } from "react";
 import {
   Alert,
   Animated,
@@ -10,6 +10,7 @@ import {
   Platform,
   Pressable as RNPressable,
   type PressableProps,
+  type LayoutChangeEvent,
   type StyleProp,
   type ViewStyle,
   ScrollView,
@@ -32,7 +33,7 @@ import * as SystemUI from "expo-system-ui";
 import * as ImagePicker from "expo-image-picker";
 import { Feather as FeatherOutline, Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Location from "expo-location";
-import Svg, { Circle, Path, Polyline, type CircleProps } from "react-native-svg";
+import Svg, { Circle, Defs, LinearGradient, Path, Polyline, Rect, Stop, type CircleProps } from "react-native-svg";
 import { useFonts } from "expo-font";
 // Per-weight imports: the package root pulls in all 18 Poppins files.
 import { Poppins_400Regular } from "@expo-google-fonts/poppins/400Regular";
@@ -1373,10 +1374,14 @@ const NATIVE_GLASS = Platform.OS === "ios" && isLiquidGlassAvailable() && isGlas
 // with almost no tint; on the web the backdrop is also refracted (lib/refraction.web.ts). Both get a hairline along the top and bottom edges that fades out toward the ends.
 function Glass({ target, style, children, onLayout }: { target: RefObject<ComponentRef<typeof View> | null>; style?: ComponentProps<typeof View>["style"]; children: ReactNode; onLayout?: ComponentProps<typeof View>["onLayout"] }) {
   const [box, setBox] = useState({ w: 0, h: 0 }); // the web lens is shaped to this exact size
+  const measure = (e: LayoutChangeEvent) => {
+    setBox({ w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height });
+    onLayout?.(e);
+  };
   if (NATIVE_GLASS) {
     return (
-      <GlassView glassEffectStyle="regular" isInteractive colorScheme={DARK ? "dark" : "light"} style={[s.glassNative, style]} onLayout={onLayout}>
-        <GlassEdges />
+      <GlassView glassEffectStyle="regular" isInteractive colorScheme={DARK ? "dark" : "light"} style={[s.glassNative, style]} onLayout={measure}>
+        <GlassEdges width={box.w} height={box.h} />
         {children}
       </GlassView>
     );
@@ -1384,10 +1389,7 @@ function Glass({ target, style, children, onLayout }: { target: RefObject<Compon
   return (
     <View
       style={[s.glass, style]}
-      onLayout={(e) => {
-        setBox({ w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height });
-        onLayout?.(e);
-      }}
+      onLayout={measure}
     >
       {Platform.OS === "web" ? (
         // Web: the backdrop bends along the glass's outline (refraction), in Chromium browsers.
@@ -1395,17 +1397,30 @@ function Glass({ target, style, children, onLayout }: { target: RefObject<Compon
       ) : (
         <BlurView intensity={28} tint={DARK ? "dark" : "light"} blurTarget={target} blurMethod="dimezisBlurViewSdk31Plus" style={StyleSheet.absoluteFill} />
       )}
-      <GlassEdges />
+      <GlassEdges width={box.w} height={box.h} />
       {children}
     </View>
   );
 }
 
-// The glass's only stroke: a white hairline on the top and bottom edges that follows the capsule's curve round
-// both ends and tapers to nothing at the left and right sides (a border on just those two sides, with the
-// capsule's radius, draws exactly that), like light catching the edge. Never a black outline.
-function GlassEdges() {
-  return <View pointerEvents="none" style={s.glassEdges} />;
+// Inset the stroke so the longer fade stays inside the glass.
+function GlassEdges({ width, height }: { width: number; height: number }) {
+  const gradient = useId();
+  if (!width || !height) return null;
+  const fade = Math.min(height, width / 2) / width;
+  return (
+    <Svg pointerEvents="none" width={width} height={height} style={StyleSheet.absoluteFill}>
+      <Defs>
+        <LinearGradient id={gradient} x1="0%" y1="0%" x2="100%" y2="0%">
+          <Stop offset={0} stopColor="#fff" stopOpacity={0} />
+          <Stop offset={fade} stopColor="#fff" stopOpacity={1} />
+          <Stop offset={1 - fade} stopColor="#fff" stopOpacity={1} />
+          <Stop offset={1} stopColor="#fff" stopOpacity={0} />
+        </LinearGradient>
+      </Defs>
+      <Rect x={0.5} y={0.5} width={width - 1} height={height - 1} rx={(height - 1) / 2} fill="none" stroke={`url(#${gradient})`} strokeWidth={1} strokeOpacity={DARK ? 0.22 : 0.95} />
+    </Svg>
+  );
 }
 
 // Bottom bar, floating over the page in glass: Home on its own, then My gadgets, History and Profile. The current
@@ -3802,17 +3817,6 @@ function makeStyles() {
   tabLabel: { fontFamily: "Poppins_500Medium", fontSize: 10, lineHeight: 13, color: tone("rgba(0,0,0,0.7)") },
   tabLabelOn: { fontFamily: "Poppins_600SemiBold", color: tone("#000") },
   glass: { overflow: "hidden", borderRadius: 100, backgroundColor: DARK ? "rgba(36,36,40,0.45)" : "rgba(255,255,255,0.12)" },
-  glassEdges: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    borderRadius: 100,
-    borderTopWidth: 1,
-    borderBottomWidth: 1,
-    borderColor: DARK ? "rgba(255,255,255,0.22)" : "rgba(255,255,255,0.95)",
-  },
   glassNative: { borderRadius: 100, overflow: "hidden" },
   glassShadow: { borderRadius: 100, shadowColor: "#000", shadowOpacity: 0.1, shadowRadius: 24, shadowOffset: { width: 0, height: 10 } },
   // Profile, measured from the mockup.

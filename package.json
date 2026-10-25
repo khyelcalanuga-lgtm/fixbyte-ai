@@ -3,6 +3,7 @@
   "private": true,
   "main": "expo-router/entry",
   "scripts": {
+    "postinstall": "node scripts/patch-expo-ssr.cjs",
     "start": "expo start",
     "build:apk": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-apk.ps1",
     "server:export": "expo export --platform web",
