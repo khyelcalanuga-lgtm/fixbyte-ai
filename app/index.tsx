@@ -41,6 +41,7 @@ import { Poppins_600SemiBold } from "@expo-google-fonts/poppins/600SemiBold";
 import { apiFetch } from "../lib/api";
 import { DAILY_LIMIT, LIMIT_MESSAGE, SYNC_MESSAGE, recordSharedUse, recordUse, resetUsage, usedToday, watchSharedUsage } from "../lib/usage";
 import { load, save } from "../lib/store";
+import { AVATAR_COLORS, loadAvatarColor, resetAvatarColorCache, saveAvatarColor, watchAvatarColor } from "../lib/profile";
 import { allowReminders, cancelReminders, remindLater } from "../lib/reminders";
 import { authMessage, deleteAccount, firebaseAuth, firebaseReady, googleSignIn, googleSignOut, isGoogleUser } from "../lib/auth";
 import {
@@ -261,6 +262,8 @@ export default function App() {
   const [fontsLoaded] = useFonts({ Poppins_400Regular, Poppins_500Medium, Poppins_600SemiBold });
   const [start, setStart] = useState(true); // the start page, until it has faded out
   const [settings, setSettings] = useState(loadSettings); // name, email and preferences, saved on the device
+  const [avatarColor, setAvatarColor] = useState(() => loadAvatarColor(null));
+  const [profileError, setProfileError] = useState("");
   const scheme = useColorScheme();
   const [mounted, setMounted] = useState(Platform.OS !== "web");
   useEffect(() => setMounted(true), []);
@@ -331,6 +334,16 @@ export default function App() {
 
   const last = turns[turns.length - 1];
   const pending = last?.role === "assistant" && last.questions.length > 0 && !busy ? last : null;
+
+  useEffect(() => {
+    setProfileError("");
+    setAvatarColor(loadAvatarColor(user ?? null));
+    if (!user) return;
+    return watchAvatarColor(user.uid, (color) => {
+      setAvatarColor(color);
+      setProfileError("");
+    }, () => setProfileError("Your avatar color could not sync. Check your connection and try again."));
+  }, [uid]);
 
   // Read after mount: the web build also renders on the server, where there's no stored count.
   useEffect(() => {
@@ -652,14 +665,25 @@ export default function App() {
           <History gadgets={gadgets} history={history} onChange={saveHistory} onDiagnose={() => setTab("home")} />
         ) : tab === "profile" ? (
           <Profile
+            key={uid}
             gadgetCount={gadgets.length}
             checkCount={history.length}
             fixedCount={history.filter((c) => c.status === "fixed").length}
             settings={settings}
             onChange={updateSettings}
+            avatarColor={avatarColor}
+            profileError={profileError}
+            onColorChange={async (color) => {
+              await saveAvatarColor(user ?? null, color);
+              if (user && firebaseAuth().currentUser?.uid !== user.uid) return;
+              setAvatarColor(color);
+              setProfileError("");
+            }}
             user={user ?? null}
             onSignOut={leave}
             onErase={() => {
+              resetAvatarColorCache(user ?? null);
+              setAvatarColor(AVATAR_COLORS[0].value);
               cancelReminders();
               resetUsage(uid);
               if (!user) setUsed(0);
@@ -723,9 +747,8 @@ export default function App() {
                     <View style={s.headerPhone} />
                   </Pressable>
                   <Text style={s.title}>FixByte AI</Text>
-                  {/* ponytail: initial-letter avatar (from the profile name); swap for a photo via <Image> when there's one */}
-                  <Pressable onPress={() => setTab("profile")} style={[s.circle, s.avatar]} accessibilityLabel="Profile">
-                    <Text style={s.avatarText}>{initial(settings)}</Text>
+                  <Pressable onPress={() => setTab("profile")} style={s.circle} accessibilityLabel="Profile">
+                    <Avatar settings={settings} color={avatarColor} size={45} />
                   </Pressable>
                 </View>
                 <View style={s.home}>
@@ -1484,6 +1507,14 @@ const REGIONS = ["Metro Manila", "Cebu City", "Davao City", "Baguio", "Iloilo Ci
 const SUPPORT_EMAIL = "contact@khyelcalanuga.dev";
 // The avatar letter: the name's first letter, else the email's.
 const initial = (st: Settings) => (st.name.trim()[0] ?? st.email.trim()[0] ?? "?").toUpperCase();
+
+function Avatar({ settings, color, size = 56 }: { settings: Settings; color: string; size?: number }) {
+  return (
+    <View style={[s.avatar, { width: size, height: size, borderRadius: size / 2, backgroundColor: color }]}>
+      <Text style={[s.avatarText, { fontSize: Math.round(size * 0.4), lineHeight: Math.round(size * 0.55) }]}>{initial(settings)}</Text>
+    </View>
+  );
+}
 const VERSION = Constants.expoConfig?.version ?? "1.0";
 
 type Doc = { heading: string; body: string }[];
@@ -1526,6 +1557,9 @@ function Profile({
   settings,
   user,
   onChange,
+  avatarColor,
+  profileError,
+  onColorChange,
   onSignOut,
   onErase,
 }: {
@@ -1535,6 +1569,9 @@ function Profile({
   settings: Settings;
   user: User | null;
   onChange: (patch: Partial<Settings>) => void;
+  avatarColor: string;
+  profileError: string;
+  onColorChange: (color: string) => Promise<void>;
   onSignOut: () => void;
   onErase: () => void;
 }) {
@@ -1595,10 +1632,13 @@ function Profile({
       <SubPage title="Edit profile" onBack={back}>
         <EditProfile
           settings={settings}
+          avatarColor={avatarColor}
+          profileError={profileError}
+          onColorChange={onColorChange}
           emailLocked={!!user}
           onSave={async (patch) => {
-            if (user) await updateProfile(user, { displayName: patch.name }); // saved to the account too
-            onChange(patch);
+            if (user && patch.name !== settings.name) await updateProfile(user, { displayName: patch.name });
+            onChange({ name: patch.name, email: patch.email });
             back();
           }}
         />
@@ -1687,7 +1727,10 @@ function Profile({
         </Pressable>
         {/* Two taps instead of a dialog: Alert has no buttons on web. */}
         <Pressable
-          onPress={() => (confirmErase ? onErase() : setConfirmErase(true))}
+          onPress={() => {
+            if (!confirmErase) return setConfirmErase(true);
+            try { onErase(); } catch (e) { setNote(e instanceof Error ? e.message : "Your data could not be erased. Try again."); }
+          }}
           style={[s.googleBtn, s.pSignOut]}
           accessibilityRole="button"
         >
@@ -1695,7 +1738,7 @@ function Profile({
           <Text style={[s.googleText, s.pSignOutText]}>{confirmErase ? "Tap again to erase" : "Erase data on this device"}</Text>
         </Pressable>
         <Text style={[s.msgText, s.dim, s.pHint]}>
-          Erasing removes your name and settings from this device and signs you out. Your account and its shared daily count stay.
+          Erasing removes your name and settings from this device and signs you out. Your account, avatar color, and shared daily count stay.
         </Text>
         {user && (
           <>
@@ -1799,9 +1842,7 @@ function Profile({
         {/* Who you are (tap to edit), then what you've done. */}
         <View style={s.pCard}>
           <Pressable onPress={() => setPage("edit")} style={s.gTop} accessibilityRole="button" accessibilityLabel="Edit profile">
-            <View style={[s.pAvatar, s.pAvatarCenter]}>
-              <Text style={s.pAvatarText}>{initial(settings)}</Text>
-            </View>
+            <Avatar settings={settings} color={avatarColor} />
             <View style={s.gText}>
               <Text style={[s.pName, !settings.name.trim() && s.dim]} numberOfLines={1}>
                 {settings.name.trim() || "Add your name"}
@@ -1826,6 +1867,7 @@ function Profile({
           </View>
         </View>
 
+        {!!profileError && <Text style={s.error}>{profileError}</Text>}
         <Text style={[s.monoLabel, s.pSection]}>PREFERENCES</Text>
         <View style={s.pSettings}>
           <View style={s.pRow}>
@@ -1887,23 +1929,75 @@ function SubPage({ title, onBack, children }: { title: string; onBack: () => voi
 // With a Firebase account the email is the sign-in email, so it's shown but not editable here.
 function EditProfile({
   settings,
+  avatarColor,
+  profileError,
+  onColorChange,
   emailLocked,
   onSave,
 }: {
   settings: Settings;
+  avatarColor: string;
+  profileError: string;
+  onColorChange: (color: string) => Promise<void>;
   emailLocked: boolean;
   onSave: (patch: Pick<Settings, "name" | "email">) => Promise<void>;
 }) {
   const [name, setName] = useState(settings.name);
   const [email, setEmail] = useState(settings.email);
+  const [pendingColor, setPendingColor] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  function save() {
+
+  async function chooseColor(color: string) {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    setPendingColor(color);
+    try {
+      await onColorChange(color);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Your avatar color could not be saved. Try again.");
+    } finally {
+      setPendingColor(null);
+      setBusy(false);
+    }
+  }
+
+  async function save() {
+    if (busy) return;
     if (!name.trim()) return setError("Enter your name.");
     if (!/^\S+@\S+\.\S+$/.test(email.trim())) return setError("Enter a valid email address.");
-    onSave({ name: name.trim(), email: email.trim() }).catch((e) => setError(authMessage(e)));
+    setError("");
+    setBusy(true);
+    try {
+      await onSave({ name: name.trim(), email: email.trim() });
+    } catch (e) {
+      setError(e instanceof Error && !("code" in e) ? e.message : authMessage(e));
+    } finally { setBusy(false); }
   }
   return (
     <>
+      <View style={s.avatarPreview}>
+        <Avatar settings={{ ...settings, name, email }} color={pendingColor ?? avatarColor} size={96} />
+      </View>
+      <Text style={s.authLabel}>Avatar color</Text>
+      <View style={s.avatarColors} accessibilityRole="radiogroup" accessibilityLabel="Avatar color">
+        {AVATAR_COLORS.map((color) => (
+          <Pressable
+            key={color.value}
+            onPress={() => chooseColor(color.value)}
+            disabled={busy}
+            style={[s.avatarSwatch, { backgroundColor: color.value }]}
+            accessibilityRole="radio"
+            accessibilityLabel={color.label}
+            accessibilityState={{ checked: (pendingColor ?? avatarColor) === color.value, disabled: busy }}
+          >
+            {(pendingColor ?? avatarColor) === color.value && <Feather name="check" size={22} color={ON_ACCENT} />}
+          </Pressable>
+        ))}
+      </View>
+      <Text style={[s.authNote, s.pHint]}>{pendingColor ? "Saving avatar color…" : emailLocked ? "Color choices save automatically and sync across your devices." : "Color choices save automatically on this device."}</Text>
+      {!!profileError && <Text style={s.error}>{profileError}</Text>}
       <Field label="Name" value={name} onChangeText={setName} placeholder="Your name" autoComplete="name" textContentType="name" />
       <Field
         label="Email"
@@ -1919,8 +2013,8 @@ function EditProfile({
       />
       {emailLocked && <Text style={[s.msgText, s.dim, s.pHint]}>This is the email you sign in with.</Text>}
       {!!error && <Text style={s.error}>{error}</Text>}
-      <Pressable onPress={save} style={[s.welcomeBtn, s.authBtn]} accessibilityRole="button">
-        <Text style={s.welcomeBtnText}>Save</Text>
+      <Pressable onPress={save} disabled={busy} style={[s.welcomeBtn, s.authBtn, busy && s.disabled]} accessibilityRole="button">
+        <Text style={s.welcomeBtnText}>{busy ? "Please wait…" : "Save"}</Text>
       </Pressable>
     </>
   );
@@ -3615,8 +3709,8 @@ function makeStyles() {
 
   header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 20 },
   circle: { width: 45, height: 45, borderRadius: 100, backgroundColor: surface("#fff"), alignItems: "center", justifyContent: "center" },
-  avatar: { borderWidth: 1, borderColor: tone("#D5E2D5"), backgroundColor: surface("#EAF7E5") },
-  avatarText: { fontFamily: "Poppins_600SemiBold", fontSize: 17, color: tone("#000") },
+  avatar: { alignItems: "center", justifyContent: "center", overflow: "hidden" },
+  avatarText: { fontFamily: "Poppins_600SemiBold", color: ON_ACCENT, includeFontPadding: false, textAlignVertical: "center" },
   title: { fontFamily: "Poppins_600SemiBold", fontSize: 15, lineHeight: 22, color: tone("#000") },
   time: { fontFamily: "Poppins_400Regular", fontSize: 11, lineHeight: 16, textAlign: "center", color: tone("#000"), marginTop: 4 },
 
@@ -3723,7 +3817,9 @@ function makeStyles() {
   glassShadow: { borderRadius: 100, shadowColor: "#000", shadowOpacity: 0.1, shadowRadius: 24, shadowOffset: { width: 0, height: 10 } },
   // Profile, measured from the mockup.
   pCard: { padding: 18, borderRadius: 25, backgroundColor: surface("#fff") },
-  pAvatar: { width: 56, height: 56, borderRadius: 28, backgroundColor: GREEN },
+  avatarPreview: { alignItems: "center", paddingTop: 16 },
+  avatarColors: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
+  avatarSwatch: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center" },
   pName: { fontFamily: "Poppins_600SemiBold", fontSize: 18, lineHeight: 25, color: tone("#000") },
   pEdit: { height: 32, paddingHorizontal: 14, marginLeft: 10, borderRadius: 100, justifyContent: "center", backgroundColor: surface("#F3F3F3") },
   pEditText: { fontFamily: "Poppins_500Medium", fontSize: 13, color: tone("#000") },
@@ -3743,8 +3839,6 @@ function makeStyles() {
   pRowSub: { fontFamily: "Poppins_400Regular", fontSize: 12, lineHeight: 17, color: tone("rgba(0,0,0,0.5)"), marginTop: 1 },
   pRowValue: { flexShrink: 1, maxWidth: "40%", fontFamily: "Poppins_400Regular", fontSize: 14, color: tone("rgba(0,0,0,0.45)") },
   pSignOut: { marginTop: 10 },
-  pAvatarCenter: { alignItems: "center", justifyContent: "center" },
-  pAvatarText: { fontFamily: "Poppins_600SemiBold", fontSize: 22, color: ON_ACCENT },
   pHint: { marginTop: 10, marginBottom: 4, paddingHorizontal: 6 },
   pDoc: { paddingVertical: 20, gap: 4 },
   pDocItem: { gap: 4, marginBottom: 12 },

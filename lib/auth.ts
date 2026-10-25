@@ -1,6 +1,7 @@
 import { Platform, TurboModuleRegistry } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { getApp, getApps, initializeApp } from "firebase/app";
+import { deleteDoc, doc, getFirestore } from "firebase/firestore";
 import {
   deleteUser,
   EmailAuthProvider,
@@ -96,6 +97,7 @@ export async function deleteAccount(user: User, password: string): Promise<boole
     if (!cred) return false;
     await reauthenticateWithCredential(user, cred);
   }
+  await deleteDoc(doc(getFirestore(firebaseAuth().app), "profiles", user.uid));
   await deleteUser(user);
   return true;
 }

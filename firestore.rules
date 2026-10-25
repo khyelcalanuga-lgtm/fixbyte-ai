@@ -1,6 +1,18 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    match /profiles/{uid} {
+      function owner() {
+        return request.auth != null && request.auth.uid == uid;
+      }
+
+      allow get, delete: if owner();
+      allow create, update: if owner()
+        && request.resource.data.keys().hasAll(['avatarColor'])
+        && request.resource.data.keys().hasOnly(['avatarColor'])
+        && request.resource.data.avatarColor in ['#7CEB5A', '#93C5FD', '#C4B5FD', '#FDA4AF', '#FDBA74', '#FDE047'];
+    }
+
     match /dailyUsage/{uid} {
       function owner() {
         return request.auth != null && request.auth.uid == uid;
