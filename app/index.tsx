@@ -21,7 +21,7 @@ import {
   View,
   useWindowDimensions,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 // Moves with the keyboard as it slides on phones (see lib/keyboard.tsx).
 import { KeyboardAvoidingView } from "../lib/keyboard";
 import { BlurTargetView, BlurView } from "expo-blur";
@@ -638,7 +638,9 @@ export default function App() {
   const result = shown?.role === "assistant" && shown.diagnosis ? shown : undefined;
 
   return (
-    <SafeAreaView style={s.screen} edges={["top", "left", "right"]}>
+    // All four edges: Android draws the app behind its navigation bar (edge-to-edge), so the bottom inset keeps
+    // footers and buttons above it. On a phone without a bar the inset is 0.
+    <SafeAreaView style={s.screen} edges={["top", "left", "right", "bottom"]}>
       <StatusBar style={DARK ? "light" : "dark"} />
       <BlurTargetView ref={glassTarget} style={s.flex}>
         {!signedIn ? (
@@ -1521,6 +1523,7 @@ function GlassEdges({ width, height }: { width: number; height: number }) {
 // tab sits under a fixed-width glass lens that slides smoothly between tabs.
 function TabBar({ active, onTab, target }: { active: Tab; onTab: (t: Tab) => void; target: RefObject<ComponentRef<typeof View> | null> }) {
   const [w, setW] = useState(0); // the tab pill's width
+  const { bottom } = useSafeAreaInsets(); // absolute, so the screen's bottom padding doesn't lift it; this does
   const position = useRef(new Animated.Value(0)).current;
   const placed = useRef(false);
   const i = TABS.findIndex((t) => t.tab === active);
@@ -1539,7 +1542,7 @@ function TabBar({ active, onTab, target }: { active: Tab; onTab: (t: Tab) => voi
   }, [slot, i, position]);
 
   return (
-    <View style={s.tabBar} pointerEvents="box-none">
+    <View style={[s.tabBar, { bottom }]} pointerEvents="box-none">
       <Pressable onPress={() => onTab("home")} style={s.glassShadow} accessibilityLabel="Home" accessibilityRole="button">
         <Glass target={target} style={s.tabHome}>
           {/* Positioned like the Views around it, so on the web it paints above the glass's absolute lens instead of being blurred by it. */}

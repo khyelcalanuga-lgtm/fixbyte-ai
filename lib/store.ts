@@ -18,6 +18,6 @@ export function save(key: string, text: string) {
     if (Platform.OS === "web") return localStorage.setItem(key, text);
     const f = new File(Paths.document, key);
     if (!f.exists) f.create();
-    f.write(text);
+    f.writeSync(text); // since expo-file-system 58, write() is async: a read right after it got the old contents
   } catch {}
 }
