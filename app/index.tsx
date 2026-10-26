@@ -125,6 +125,7 @@ const SOLID: Partial<Record<FeatherName, keyof typeof Ionicons.glyphMap>> = {
   slash: "ban",
   smartphone: "phone-portrait",
   speaker: "volume-high",
+  star: "star",
   tablet: "tablet-portrait",
   thermometer: "thermometer",
   tool: "construct",
@@ -137,6 +138,7 @@ const SOLID: Partial<Record<FeatherName, keyof typeof Ionicons.glyphMap>> = {
   wind: "cloudy",
   x: "close",
   "x-octagon": "close-circle",
+  zap: "flash",
   "zap-off": "flash-off",
 };
 
@@ -291,6 +293,7 @@ export default function App() {
   const [conversationState, setConversationState] = useState<{ uid: string; items: Conversation[] }>({ uid: "", items: [] });
   const [conversationError, setConversationError] = useState("");
   const [showConversations, setShowConversations] = useState(false);
+  const [showPremium, setShowPremium] = useState(false); // the Premium page, opened from Upgrade on Home
   const [text, setText] = useState("");
   const [image, setImage] = useState<string | null>(null); // data URL
   const [attachOpen, setAttachOpen] = useState(false); // the plus button's camera / gallery menu
@@ -424,6 +427,7 @@ export default function App() {
     setDiag(null);
     setConversationId(newLibraryId());
     setShowConversations(false);
+    setShowPremium(false);
     setAttachOpen(false);
     setGuideStep(null);
     setShowShops(false);
@@ -663,6 +667,8 @@ export default function App() {
               setTab("home");
             }}
           />
+        ) : showPremium ? (
+          <Premium onBack={() => setShowPremium(false)} />
         ) : showConversations ? (
           <Conversations
             items={conversationState.uid === uid ? conversationState.items : []}
@@ -914,7 +920,7 @@ export default function App() {
                 </>
               ) : (
                 <>
-                  {!result && <Usage used={used} error={usageError} upgrade={home} />}
+                  {!result && <Usage used={used} error={usageError} onUpgrade={home ? () => setShowPremium(true) : undefined} />}
                   {forGadget && !result && (
                     <View style={s.forTag}>
                       <Feather name={kindIcon(forGadget.kind)} size={16} color={tone("#000")} />
@@ -995,7 +1001,7 @@ export default function App() {
         )}
       </BlurTargetView>
       {/* One bar for all three tabs, so its pill can morph from tab to tab instead of being redrawn. */}
-      {signedIn && !setup && !showConversations && tab !== "home" && <TabBar active={tab} onTab={setTab} target={glassTarget} />}
+      {signedIn && !setup && !showConversations && !showPremium && tab !== "home" && <TabBar active={tab} onTab={setTab} target={glassTarget} />}
       {start && <StartPage onDone={() => setStart(false)} />}
     </SafeAreaView>
   );
@@ -3342,8 +3348,8 @@ function Shops({ t, region, onBack, onGadgets }: { t: Extract<Turn, { role: "ass
 }
 
 // Keep the allowance secondary to the composer, with one segment per diagnosis left.
-function Usage({ used, error, upgrade }: { used: number | null; error: boolean; upgrade?: boolean }) {
-  const [showUpgradeInfo, setShowUpgradeInfo] = useState(false);
+// onUpgrade: shows the Upgrade button (Home only), which opens the Premium page.
+function Usage({ used, error, onUpgrade }: { used: number | null; error: boolean; onUpgrade?: () => void }) {
   const left = used === null ? 0 : Math.max(0, DAILY_LIMIT - used);
   const ready = !error && used !== null;
   const label = tr(error ? "Daily allowance unavailable. Check your connection." : used === null ? "Syncing daily allowance." : "{0} of {1} free diagnoses left today.", left, DAILY_LIMIT) + (ready && left === 0 ? ` ${tr("Your allowance renews daily.")}` : "");
@@ -3360,15 +3366,8 @@ function Usage({ used, error, upgrade }: { used: number | null; error: boolean; 
             <Text style={s.usageTotal}>{error ? "Unavailable" : "Syncing…"}</Text>
           )}
         </View>
-        {upgrade && (
-          <Pressable
-            onPress={() => setShowUpgradeInfo((shown) => !shown)}
-            style={s.usageUpgrade}
-            accessibilityRole="button"
-            accessibilityLabel="Upgrade"
-            accessibilityState={{ expanded: showUpgradeInfo }}
-            aria-expanded={showUpgradeInfo}
-          >
+        {onUpgrade && (
+          <Pressable onPress={onUpgrade} style={s.usageUpgrade} accessibilityRole="button" accessibilityLabel="Upgrade">
             <Text style={s.usageUpgradeText}>Upgrade</Text>
             <Feather name="arrow-up-right" size={13} color={tone("#000")} />
           </Pressable>
@@ -3379,12 +3378,41 @@ function Usage({ used, error, upgrade }: { used: number | null; error: boolean; 
           <View key={i} style={[s.usageSegment, ready && i < left && s.usageSegmentOn]} />
         ))}
       </View>
-      {showUpgradeInfo ? (
-        <Text style={s.usageNote} accessibilityLiveRegion="polite">Paid plans are coming soon. Your free diagnoses renew daily.</Text>
-      ) : ready && left === 0 ? (
-        <Text style={s.usageNote}>Your free diagnoses renew daily.</Text>
-      ) : null}
+      {ready && left === 0 && <Text style={s.usageNote}>Your free diagnoses renew daily.</Text>}
     </View>
+  );
+}
+
+// Premium: a placeholder until paid plans exist. What they'll add, and a button that says they're not here yet.
+const PERKS: { icon: FeatherName; label: string }[] = [
+  { icon: "zap", label: "More diagnoses every day" },
+  { icon: "clock", label: "Faster answers at busy times" },
+  { icon: "star", label: "Early access to new features" },
+];
+function Premium({ onBack }: { onBack: () => void }) {
+  return (
+    <SubPage title="Premium" onBack={onBack}>
+      <View style={s.gEmptyCard}>
+        <View style={[s.gHeroIcon, s.gHeroMain]}>
+          <Feather name="zap" size={30} color={GREEN} />
+        </View>
+        <Text style={[s.gEmptyTitle, s.premiumTitle]}>FixByte Premium</Text>
+        <Text style={s.gEmptyBody}>Paid plans are coming soon. Until then, your free diagnoses renew every day.</Text>
+      </View>
+      <View style={s.pSettings}>
+        {PERKS.map(({ icon, label }, i) => (
+          <View key={label} style={[s.pRow, i > 0 && s.pLine]}>
+            <View style={s.pIcon}>
+              <Feather name={icon} size={17} color={tone("#000")} />
+            </View>
+            <Text style={s.pRowLabel}>{label}</Text>
+          </View>
+        ))}
+      </View>
+      <View style={[s.welcomeBtn, s.premiumBtn, s.disabled]} accessibilityState={{ disabled: true }}>
+        <Text style={s.welcomeBtnText}>Coming soon</Text>
+      </View>
+    </SubPage>
   );
 }
 
@@ -4172,6 +4200,8 @@ function makeStyles() {
   usageMeter: { flexDirection: "row", gap: 5 },
   usageSegment: { flex: 1, height: 3, borderRadius: 2, backgroundColor: surface("rgba(0,0,0,0.12)") },
   usageSegmentOn: { backgroundColor: DARK ? GREEN : "#579744" },
+  premiumTitle: { marginTop: 18 },
+  premiumBtn: { marginTop: 18 },
   usageNote: { fontFamily: "Poppins_400Regular", fontSize: 11, lineHeight: 17, color: tone("rgba(0,0,0,0.6)") },
   usageUpgrade: { minHeight: 44, paddingHorizontal: 14, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5, borderRadius: 100, borderWidth: 1, borderColor: tone("rgba(0,0,0,0.15)") },
   usageUpgradeText: { fontFamily: "Poppins_500Medium", fontSize: 12, lineHeight: 20, color: tone("#000") },
