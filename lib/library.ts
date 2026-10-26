@@ -81,8 +81,9 @@ export function openLibraryList<K extends Kind>(db: Firestore | null, uid: strin
       else save(key, JSON.stringify(local));
     } finally { onChange(local); }
   };
-  const fail = () => {
+  const fail = (error?: unknown) => {
     if (stopped) return;
+    console.warn(`${kind} sync failed`, error); // the message below is the same for every cause; this says which
     onError("Sync is unavailable. Your saved items stay on this device; we'll retry automatically.");
     if (!retry) retry = setTimeout(() => { retry = undefined; if (!listening || kind === "conversations") listen(); flush(); }, 10000);
   };
@@ -120,7 +121,7 @@ export function openLibraryList<K extends Kind>(db: Firestore | null, uid: strin
         }
         if (!stopped && kind === "conversations") listen();
         if (!stopped && listening) onError("");
-      } catch { fail(); }
+      } catch (error) { fail(error); }
     })().finally(() => { flushing = undefined; if (!stopped && !retry) flush(); });
   };
   const listen = () => {
@@ -145,7 +146,7 @@ export function openLibraryList<K extends Kind>(db: Firestore | null, uid: strin
             remote = new Map(records.filter((entry): entry is readonly [string, Conversation | null] => entry[1] !== undefined)) as Map<string, Item | null>;
             publish();
             if (!Object.keys(pending).length) onError("");
-          }).catch(() => { if (!stopped && request === snapshotRun) fail(); });
+          }).catch(error => { if (!stopped && request === snapshotRun) fail(error); });
         return;
       }
       const records = new Map<string, Item | null>();
@@ -156,7 +157,7 @@ export function openLibraryList<K extends Kind>(db: Firestore | null, uid: strin
       remote = records;
       publish();
       if (!Object.keys(pending).length) onError("");
-    }, () => { listening = false; fail(); });
+    }, error => { listening = false; fail(error); });
   };
   try { persist(); publish(); } catch { fail(); }
   listen();
@@ -191,7 +192,7 @@ export function openLibraryList<K extends Kind>(db: Firestore | null, uid: strin
         publish();
         if (!db) { remote = new Map(local.map(item => [item.id, item])); pending = {}; persist(); onError(""); }
         flush();
-      } catch (error) { fail(); throw error; }
+      } catch (error) { fail(error); throw error; }
     },
     async stop() { stopped = true; snapshotRun++; unsubscribe?.(); if (retry) clearTimeout(retry); await flushing; },
   };
