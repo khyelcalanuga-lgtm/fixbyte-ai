@@ -26,6 +26,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { KeyboardAvoidingView } from "../lib/keyboard";
 import { BlurTargetView, BlurView } from "expo-blur";
 import { lensStyle } from "../lib/refraction";
+import { GlassLens, lensAvailable } from "../modules/glass-lens";
 import { GlassView, isGlassEffectAPIAvailable, isLiquidGlassAvailable } from "expo-glass-effect";
 import { StatusBar } from "expo-status-bar";
 import * as SystemUI from "expo-system-ui";
@@ -1448,8 +1449,9 @@ const TABS: { tab: Tab; icon: keyof typeof MaterialCommunityIcons.glyphMap | "so
 const NATIVE_GLASS = Platform.OS === "ios" && isLiquidGlassAvailable() && isGlassEffectAPIAvailable();
 
 // One piece of Liquid Glass. On iOS 26 it uses Apple's real material.
-// Elsewhere: a flat blur of the page behind (Android reads it from `target`, the page wrapped in a BlurTargetView)
-// with almost no tint; on the web the backdrop is also refracted (lib/refraction.web.ts). Both get a hairline along the top and bottom edges that fades out toward the ends.
+// Elsewhere the page behind (Android reads it from `target`, the page wrapped in a BlurTargetView) is refracted along
+// the glass's outline: on the web by lib/refraction.web.ts, on Android 13+ by modules/glass-lens; older Android gets a
+// light blur with almost no tint. Both get a hairline along the top and bottom edges that fades out toward the ends.
 function Glass({ target, style, children, onLayout }: { target: RefObject<ComponentRef<typeof View> | null>; style?: ComponentProps<typeof View>["style"]; children: ReactNode; onLayout?: ComponentProps<typeof View>["onLayout"] }) {
   const [box, setBox] = useState({ w: 0, h: 0 }); // the web lens is shaped to this exact size
   const measure = (e: LayoutChangeEvent) => {
@@ -1466,14 +1468,22 @@ function Glass({ target, style, children, onLayout }: { target: RefObject<Compon
   }
   return (
     <View
-      style={[s.glass, style]}
+      style={[s.glass, lensAvailable && s.glassClear, style]}
       onLayout={measure}
     >
       {Platform.OS === "web" ? (
         // Web: the backdrop bends along the glass's outline (refraction), in Chromium browsers.
         <View pointerEvents="none" style={[StyleSheet.absoluteFill, lensStyle(box.w, box.h)]} />
+      ) : lensAvailable ? (
+        // Android 13+: the same lens, drawn natively (modules/glass-lens). The tint goes on top, as the web's
+        // backdrop filter takes in the glass's background; under the lens it would show only where the page is clear.
+        <>
+          <GlassLens target={target} style={StyleSheet.absoluteFill} />
+          <View pointerEvents="none" style={[StyleSheet.absoluteFill, s.glassTint]} />
+        </>
       ) : (
-        <BlurView intensity={28} tint={DARK ? "dark" : "light"} blurTarget={target} blurMethod="dimezisBlurViewSdk31Plus" style={StyleSheet.absoluteFill} />
+        // Older Android: about the web lens's 1px blur (intensity / blurReductionFactor 4 = radius 1), with next to no tint.
+        <BlurView intensity={4} tint={DARK ? "dark" : "light"} blurTarget={target} blurMethod="dimezisBlurViewSdk31Plus" style={StyleSheet.absoluteFill} />
       )}
       <GlassEdges width={box.w} height={box.h} />
       {children}
@@ -3995,7 +4005,9 @@ function makeStyles() {
   tabLabelOn: { fontFamily: "Poppins_600SemiBold", color: GREEN },
   glass: { overflow: "hidden", borderRadius: 100, backgroundColor: DARK ? "rgba(36,36,40,0.45)" : "rgba(255,255,255,0.12)" },
   glassNative: { borderRadius: 100, overflow: "hidden" },
-  glassShadow: { borderRadius: 100, shadowColor: "#000", shadowOpacity: 0.1, shadowRadius: 24, shadowOffset: { width: 0, height: 10 } },
+  glassClear: { backgroundColor: "transparent" }, // the tint moves above the Android lens (glassTint)
+  glassTint: { backgroundColor: DARK ? "rgba(36,36,40,0.45)" : "rgba(255,255,255,0.12)" },
+  glassShadow: { borderRadius: 100, boxShadow: "0px 10px 24px rgba(0,0,0,0.1)" }, // boxShadow, unlike shadow*, draws on Android too
   // Profile, measured from the mockup.
   pCard: { padding: 18, borderRadius: 25, backgroundColor: surface("#fff") },
   avatarPreview: { alignItems: "center", paddingTop: 16 },
