@@ -1527,9 +1527,10 @@ function TabBar({ active, onTab, target }: { active: Tab; onTab: (t: Tab) => voi
     <View style={s.tabBar} pointerEvents="box-none">
       <Pressable onPress={() => onTab("home")} style={s.glassShadow} accessibilityLabel="Home" accessibilityRole="button">
         <Glass target={target} style={s.tabHome}>
-          <Svg width={26} height={26} viewBox="0 0 24 24" pointerEvents="none">
-            {/* A same-colour stroke with round joins rounds off every corner of the house. */}
-            <Path d="M12 3 2 11h3v10h5v-6h4v6h5V11h3Z" fill={tone("#000")} stroke={tone("#000")} strokeWidth={1.5} strokeLinejoin="round" />
+          {/* Positioned like the Views around it, so on the web it paints above the glass's absolute lens instead of being blurred by it. */}
+          <Svg width={26} height={26} viewBox="0 0 24 24" pointerEvents="none" style={{ position: "relative" }}>
+            {/* A house with every corner rounded (each Q curves through the corner it replaces), door included. */}
+            <Path d="M4 19V12Q4 10 5.51 8.68L10.49 4.32Q12 3 13.51 4.32L18.49 8.68Q20 10 20 12V19Q20 21 18 21H15.5Q14.5 21 14.5 20V17.5Q14.5 16 13 16H11Q9.5 16 9.5 17.5V20Q9.5 21 8.5 21H6Q4 21 4 19Z" fill={tone("#000")} />
           </Svg>
         </Glass>
       </Pressable>
@@ -2002,7 +2003,7 @@ function SubPage({ title, onBack, children }: { title: string; onBack: () => voi
   return (
     <View style={s.flex}>
       <View style={s.header}>
-        <Pressable onPress={onBack} style={[s.circle, { backgroundColor: "transparent" }]} accessibilityLabel="Back">
+        <Pressable onPress={onBack} style={s.circle} accessibilityLabel="Back">
           <Feather name="arrow-left" size={20} color={tone("#000")} />
         </Pressable>
         <Text style={s.title}>{title}</Text>
