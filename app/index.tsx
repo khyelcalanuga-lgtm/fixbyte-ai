@@ -1528,7 +1528,8 @@ function TabBar({ active, onTab, target }: { active: Tab; onTab: (t: Tab) => voi
       <Pressable onPress={() => onTab("home")} style={s.glassShadow} accessibilityLabel="Home" accessibilityRole="button">
         <Glass target={target} style={s.tabHome}>
           <Svg width={26} height={26} viewBox="0 0 24 24" pointerEvents="none">
-            <Path d="M12 3 2 11h3v10h5v-6h4v6h5V11h3Z" fill={tone("#000")} />
+            {/* A same-colour stroke with round joins rounds off every corner of the house. */}
+            <Path d="M12 3 2 11h3v10h5v-6h4v6h5V11h3Z" fill={tone("#000")} stroke={tone("#000")} strokeWidth={1.5} strokeLinejoin="round" />
           </Svg>
         </Glass>
       </Pressable>
