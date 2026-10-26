@@ -30,6 +30,18 @@
       ],
       "expo-font",
       [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 144,
+          "backgroundColor": "#FFFFFF",
+          "dark": {
+            "image": "./assets/splash-icon-dark.png",
+            "backgroundColor": "#1C1C1F"
+          }
+        }
+      ],
+      [
         "expo-location",
         {
           "locationWhenInUsePermission": "FixByte AI uses your location to find repair shops near you."

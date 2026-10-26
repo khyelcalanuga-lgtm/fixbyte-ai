@@ -2515,7 +2515,7 @@ function History({
                               setOpen(null);
                               setConfirm(false);
                             }}
-                            style={[s.gRemove, s.hxAction, s.hxRemove]}
+                            style={[s.gRemove, s.hxRemove]}
                             accessibilityRole="button"
                           >
                             <Feather name="trash-2" size={17} color="#dc2626" />
@@ -4069,7 +4069,7 @@ function makeStyles() {
   hxPillText: { fontFamily: "Poppins_500Medium", fontSize: 12 },
   hxActions: { flexDirection: "row", gap: 8, marginTop: 14 },
   hxAction: { flex: 1, flexDirection: "row", gap: 8, height: 46, marginTop: 0 },
-  hxRemove: { flex: 0, paddingHorizontal: 18 },
+  hxRemove: { height: 46, marginTop: 0, paddingHorizontal: 18 }, // as wide as its label, beside the stretched Mark as fixed
   hxNone: { alignItems: "center", gap: 8, marginTop: 24 },
   hCal: { padding: 20, borderRadius: 25, backgroundColor: surface("#fff") },
   hMonthRow: { flexDirection: "row", alignItems: "center", marginBottom: 8 },

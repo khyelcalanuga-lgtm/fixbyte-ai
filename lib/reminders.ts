@@ -1,5 +1,5 @@
 import { Platform } from "react-native";
-import Constants, { ExecutionEnvironment } from "expo-constants";
+import { requireOptionalNativeModule } from "expo";
 import type * as NotificationsModule from "expo-notifications";
 import { tr } from "./i18n";
 
@@ -9,8 +9,9 @@ const AFTER_SECONDS = 2 * 24 * 60 * 60;
 const CHANNEL = "reminders";
 
 // expo-notifications is loaded on first use, never at import: Expo Go for Android lacks one of its native modules
-// (ExpoTopicSubscriptionModule, SDK 58), and loading the package there crashes the whole app. Reminders are off there.
-const unsupported = Platform.OS === "web" || (Platform.OS === "android" && Constants.executionEnvironment === ExecutionEnvironment.StoreClient);
+// (ExpoTopicSubscriptionModule, SDK 58), and loading the package there crashes the whole app (in development Metro
+// reports the failed load even when it is caught). So it's only loaded where that module exists; reminders are off elsewhere.
+const unsupported = Platform.OS === "web" || (Platform.OS === "android" && !requireOptionalNativeModule("ExpoTopicSubscriptionModule"));
 let loaded: typeof NotificationsModule | null = null;
 function notifications(): typeof NotificationsModule | null {
   if (unsupported) return null;
