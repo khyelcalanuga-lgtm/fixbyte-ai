@@ -8,7 +8,7 @@ type Body = { services: string[]; lat?: number; lng?: number; near?: string; ope
 // (A query per category with name regexes took 20-40s on the public servers.)
 const QUERY = (lat: number, lng: number) => {
   const around = `(around:${RADIUS_M},${lat},${lng})`;
-  return `[out:json][timeout:40];(
+  return `[out:json][timeout:25];(
     nwr["shop"~"^(mobile_phone|mobile_phone_repair|computer|computer_repair|electronics|electronics_repair|repair|appliance)$"]${around};
     nwr["craft"="electronics_repair"]${around};
   );out center tags;`;
@@ -31,7 +31,10 @@ const CATEGORIES: Record<string, (t: Record<string, string>) => boolean> = {
 
 const RADIUS_M = 8000;
 // Public Overpass servers are often busy (504) or hang, and which ones changes by the hour, so all are asked at once.
+// Measured Oct 2026 with the Manila query: openstreetmap.fr (worldwide data) 3-5 s; overpass-api.de queues every
+// caller ~35 s, even for a one-node query; the other three were down or hung.
 const OVERPASS = [
+  "https://overpass.openstreetmap.fr/api/interpreter",
   "https://overpass-api.de/api/interpreter",
   "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
   "https://overpass.kumi.systems/api/interpreter",
@@ -56,7 +59,7 @@ async function geocode(place: string) {
   return { lat: Number(hit.lat), lng: Number(hit.lon) };
 }
 
-// Searches take 12-30s on the public servers, and the filter chips re-ask the same query, so results are kept per
+// Searches can take 30s+ on busy public servers, and the filter chips re-ask the same query, so results are kept per
 // spot (rounded to ~100 m). The promise is cached so a chip tapped mid-search waits on that search instead of starting another.
 // ponytail: kept for the server's lifetime with no expiry; add a TTL if it ever runs long enough for shops to go stale.
 const cache = new Map<string, Promise<Element[]>>();
@@ -69,7 +72,7 @@ function shopsNear(lat: number, lng: number) {
 // The first server to answer wins; the rest are cancelled so they aren't left doing work for nothing.
 async function overpass(query: string): Promise<Element[]> {
   const done = new AbortController();
-  const signal = AbortSignal.any([done.signal, AbortSignal.timeout(45000)]);
+  const signal = AbortSignal.any([done.signal, AbortSignal.timeout(25000)]); // past this the page says "busy" rather than spin
   try {
     return await Promise.any(
       OVERPASS.map(async (url) => {

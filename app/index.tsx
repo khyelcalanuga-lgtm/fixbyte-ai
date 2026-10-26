@@ -3138,10 +3138,11 @@ function Shops({ t, region, onBack, onGadgets }: { t: Extract<Turn, { role: "ass
       try {
         const perm = await Location.requestForegroundPermissionsAsync();
         if (!perm.granted) throw new Error("Location is off.");
-        // A recent last-known position is instant; a fresh GPS fix can take several seconds on a phone.
+        // A recent last-known position is instant. Otherwise a network fix (Low accuracy, ~1 km) is enough for an
+        // 8 km search and arrives in about a second; waiting for GPS took several seconds indoors.
         const p =
           (await Location.getLastKnownPositionAsync({ maxAge: 10 * 60_000 }).catch(() => null)) ??
-          (await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }));
+          (await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Low }));
         setLoc({ lat: p.coords.latitude, lng: p.coords.longitude });
         // City and region names for the labels; reverse geocoding isn't available on web, so they're optional.
         Location.reverseGeocodeAsync(p.coords)
