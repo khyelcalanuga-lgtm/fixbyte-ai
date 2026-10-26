@@ -40,6 +40,7 @@ import { Poppins_400Regular } from "@expo-google-fonts/poppins/400Regular";
 import { Poppins_500Medium } from "@expo-google-fonts/poppins/500Medium";
 import { Poppins_600SemiBold } from "@expo-google-fonts/poppins/600SemiBold";
 import { apiFetch } from "../lib/api";
+import { findShops } from "../lib/shops";
 import { LANGUAGES, LANGUAGE_NAMES, Text, TextInput, locale, setLanguage, tr } from "../lib/i18n";
 import { DAILY_LIMIT, LIMIT_MESSAGE, SYNC_MESSAGE, recordSharedUse, recordUse, resetUsage, usedToday, watchSharedUsage } from "../lib/usage";
 import { load, save } from "../lib/store";
@@ -3168,20 +3169,17 @@ function Shops({ t, region, onBack, onGadgets }: { t: Extract<Turn, { role: "ass
     let live = true; // ignore a slower, older search finishing after a newer one
     setLoading(true);
     setError("");
-    apiFetch("/api/shops", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        services: service ? [service] : (d.shopServices ?? []),
-        lat: loc?.lat,
-        lng: loc?.lng,
-        near: near || undefined,
-        openNow,
-      }),
-    })
-      .then(async (r) => {
-        const j = await r.json();
-        if (!r.ok) throw new Error(j.error);
+    const query = { services: service ? [service] : (d.shopServices ?? []), lat: loc?.lat, lng: loc?.lng, near: near || undefined, openNow };
+    // Phones ask OpenStreetMap directly: ~5 s, against 15-30 s (often timing out) through the hosted server.
+    (Platform.OS === "web"
+      ? apiFetch("/api/shops", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(query) }).then(async (r) => {
+          const j = await r.json();
+          if (!r.ok) throw new Error(j.error);
+          return j;
+        })
+      : findShops(query)
+    )
+      .then((j) => {
         if (live) {
           setData(j);
           setExpanded(0);
