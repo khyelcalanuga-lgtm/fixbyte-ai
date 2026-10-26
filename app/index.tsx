@@ -18,8 +18,6 @@ import {
   Share,
   StyleSheet,
   useColorScheme,
-  Text,
-  TextInput,
   View,
   useWindowDimensions,
 } from "react-native";
@@ -41,6 +39,7 @@ import { Poppins_400Regular } from "@expo-google-fonts/poppins/400Regular";
 import { Poppins_500Medium } from "@expo-google-fonts/poppins/500Medium";
 import { Poppins_600SemiBold } from "@expo-google-fonts/poppins/600SemiBold";
 import { apiFetch } from "../lib/api";
+import { LANGUAGES, LANGUAGE_NAMES, Text, TextInput, locale, setLanguage, tr } from "../lib/i18n";
 import { DAILY_LIMIT, LIMIT_MESSAGE, SYNC_MESSAGE, recordSharedUse, recordUse, resetUsage, usedToday, watchSharedUsage } from "../lib/usage";
 import { load, save } from "../lib/store";
 import { saveConversations, type Conversation, type Diagnosis, type Question, type Turn } from "../lib/conversations";
@@ -242,6 +241,7 @@ export default function App() {
   // Set before anything below renders: every component reads `s`, tone() and surface() from it.
   const dark = mounted && (settings.theme === "dark" || (settings.theme === "system" && scheme === "dark"));
   applyTheme(dark);
+  setLanguage(settings.language); // likewise for the Text and tr() calls below
   useEffect(() => {
     SystemUI.setBackgroundColorAsync(dark ? "#111113" : "#F3F3F3");
   }, [dark]);
@@ -373,7 +373,7 @@ export default function App() {
       ? await ImagePicker.requestCameraPermissionsAsync()
       : await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!perm.granted) {
-      setError(`${camera ? "Camera" : "Photo"} permission denied.`);
+      setError(tr(camera ? "Camera permission denied." : "Photo permission denied."));
       return null;
     }
     // quality < 1 re-encodes to JPEG (also converts iOS HEIC) and keeps uploads small.
@@ -628,7 +628,7 @@ export default function App() {
 
   const home = turns.length === 0 && !busy;
   const out = home && used !== null && used >= DAILY_LIMIT;
-  const time = startedAt?.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }).toUpperCase();
+  const time = startedAt?.toLocaleTimeString(locale(), { hour: "numeric", minute: "2-digit" }).toUpperCase();
   const shown = resultIdx === null ? undefined : turns[resultIdx];
   const result = shown?.role === "assistant" && shown.diagnosis ? shown : undefined;
 
@@ -764,7 +764,7 @@ export default function App() {
                         gadgets={gadgets}
                         onPick={(g) => attachCheck(filing.id, g.id)}
                         onAdd={() => {
-                          const g = newGadget(filing.device || "My device", filing.kind);
+                          const g = newGadget(filing.device || tr("My device"), filing.kind);
                           attachCheck(filing.id, g.id);
                           saveGadgets([g, ...gadgets]);
                         }}
@@ -796,7 +796,7 @@ export default function App() {
                 <ScrollView style={s.flex} contentContainerStyle={s.home} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
                   <Logo />
                   <Text style={s.greeting}>
-                    {settings.name.trim() ? `${greeting()}, ${settings.name.trim().split(/\s+/)[0]}` : greeting()}
+                    {settings.name.trim() ? `${tr(greeting())}, ${settings.name.trim().split(/\s+/)[0]}` : greeting()}
                   </Text>
                   <View style={s.cards}>
                     <Card icon="camera" title="Scan a photo" subtitle="AI spots the damage" onPress={scan} />
@@ -821,7 +821,7 @@ export default function App() {
                     <Feather name="clock" size={20} color={tone("#000")} />
                   </Pressable>
                 </View>
-                {time && <Text style={s.time}>TODAY, {time}</Text>}
+                {time && <Text style={s.time}>{tr("TODAY, {0}", time)}</Text>}
                 <ScrollView
                   ref={scroll}
                   style={s.flex}
@@ -834,7 +834,7 @@ export default function App() {
                       <View key={i} style={s.userTurn}>
                         {t.image && (
                           <Pop from="right" style={s.photo}>
-                            <Image source={{ uri: t.image }} style={s.photoImg} accessibilityLabel="Your photo" />
+                            <Image source={{ uri: t.image }} style={s.photoImg} accessibilityLabel={tr("Your photo")} />
                           </Pop>
                         )}
                         {t.text && (
@@ -918,7 +918,7 @@ export default function App() {
                     <View style={s.forTag}>
                       <Feather name={kindIcon(forGadget.kind)} size={16} color={tone("#000")} />
                       <Text style={s.forTagText} numberOfLines={1}>
-                        Checking your {forGadget.name}
+                        {tr("Checking your {0}", forGadget.name)}
                       </Text>
                       <Pressable onPress={() => setForGadget(null)} hitSlop={10} accessibilityLabel="Stop checking this gadget">
                         <Feather name="x" size={16} color={tone("rgba(0,0,0,0.5)")} />
@@ -1134,8 +1134,7 @@ function Welcome({ onStart, onSignIn }: { onStart: () => void; onSignIn: () => v
       <Text style={s.welcomeTitle}>Know what’s broken</Text>
       <Text style={s.welcomeSub}>before you pay to fix it.</Text>
       <Text style={s.welcomeBody}>
-        {"Snap a photo or describe the symptoms.\n"}
-        FixByte AI finds the likely problem and shows you how to fix it safely.
+        {"Snap a photo or describe the symptoms.\nFixByte AI finds the likely problem and shows you how to fix it safely."}
       </Text>
       <View style={s.welcomeGap} />
       <Pressable onPress={onStart} style={s.welcomeBtn} accessibilityRole="button">
@@ -1154,7 +1153,7 @@ function Welcome({ onStart, onSignIn }: { onStart: () => void; onSignIn: () => v
 const kindIcon = (kind: string): FeatherName => DEVICE_KINDS.find((k) => k.label === kind)?.icon ?? "box";
 // Date-only strings are read as local dates (new Date("2026-10-20") would be UTC midnight).
 const shortDate = (iso: string) =>
-  new Date(iso.length === 10 ? `${iso}T00:00:00` : iso).toLocaleDateString([], { month: "short", day: "numeric" });
+  new Date(iso.length === 10 ? `${iso}T00:00:00` : iso).toLocaleDateString(locale(), { month: "short", day: "numeric" });
 const todayYmd = () => {
   const d = new Date();
   return ymd(d.getFullYear(), d.getMonth(), d.getDate());
@@ -1227,7 +1226,7 @@ function Gadgets({
   const pro = gadgets.filter((g) => latest(g.id)?.status === "pro").length;
   const summary = !gadgets.length
     ? "Every device you own, in one place"
-    : `${gadgets.length} gadget${gadgets.length === 1 ? "" : "s"}${pro ? ` · ${pro} need${pro === 1 ? "s" : ""} a pro` : ""}`;
+    : tr(gadgets.length === 1 ? "1 gadget" : "{0} gadgets", gadgets.length) + (pro ? ` · ${tr(pro === 1 ? "1 needs a pro" : "{0} need a pro", pro)}` : "");
 
   const toggle = (id: string) => {
     setOpen(open === id ? null : id);
@@ -1354,7 +1353,7 @@ function Gadgets({
                       {last?.title ?? "No checks yet"}
                     </Text>
                     <Text style={s.gMeta}>
-                      {last ? `${checks.length} check${checks.length === 1 ? "" : "s"} · ${shortDate(last.date)}` : `Added ${shortDate(g.added)}`}
+                      {last ? (checks.length === 1 ? tr("1 check · {0}", shortDate(last.date)) : tr("{0} checks · {1}", checks.length, shortDate(last.date))) : tr("Added {0}", shortDate(g.added))}
                     </Text>
                   </View>
                   {isOpen && (
@@ -1366,14 +1365,14 @@ function Gadgets({
                       {/* Two taps instead of a dialog: Alert has no buttons on web. */}
                       <Pressable onPress={() => (confirm ? remove(g.id) : setConfirm(true))} style={s.gRemove} accessibilityRole="button">
                         <Feather name="trash-2" size={17} color="#dc2626" />
-                        <Text style={s.gRemoveText}>{confirm ? "Tap again to remove it and its checks" : `Remove ${g.name}`}</Text>
+                        <Text style={s.gRemoveText}>{confirm ? "Tap again to remove it and its checks" : tr("Remove {0}", g.name)}</Text>
                       </Pressable>
                     </>
                   )}
                 </Pressable>
               );
             })}
-            {!shown.length && <Text style={[s.msgText, s.dim, s.gNoMatch]}>No gadgets match "{query || kind}".</Text>}
+            {!shown.length && <Text style={[s.msgText, s.dim, s.gNoMatch]}>{tr("No gadgets match \"{0}\".", query || kind || "")}</Text>}
           </>
         )}
       </ScrollView>
@@ -1534,7 +1533,7 @@ function TabBar({ active, onTab, target }: { active: Tab; onTab: (t: Tab) => voi
           </Svg>
         </Glass>
       </Pressable>
-      <View style={[s.glassShadow, s.flex]} accessibilityRole="tablist" accessibilityLabel="Sections">
+      <View style={[s.glassShadow, s.flex]} accessibilityRole="tablist" accessibilityLabel={tr("Sections")}>
         <Glass target={target} style={s.tabPill} onLayout={(e) => setW(e.nativeEvent.layout.width)}>
           {w > 0 && <Animated.View style={[s.tabMorph, { width: slot - 4, transform: [{ translateX: position }] }]} />}
           {TABS.map(({ tab, icon, label, short }) => {
@@ -1588,8 +1587,6 @@ function loadSettings(): Settings {
     return DEFAULT_SETTINGS;
   }
 }
-// Language sets the language the AI replies in (the app's own labels stay English).
-const LANGUAGES = ["English", "Filipino", "Cebuano", "Spanish", "Japanese"];
 // Region is where shop search looks when location is off.
 const REGIONS = ["Metro Manila", "Cebu City", "Davao City", "Baguio", "Iloilo City", "Cagayan de Oro"];
 const SUPPORT_EMAIL = "contact@khyelcalanuga.dev";
@@ -1605,27 +1602,27 @@ function Avatar({ settings, color, size = 56 }: { settings: Settings; color: str
 }
 const VERSION = Constants.expoConfig?.version ?? "1.0";
 
-type Doc = { heading: string; body: string }[];
+type Doc = { heading: string; body: string }[]; // in a body, {0} is the daily limit and {1} the support email
 const HELP: Doc = [
   { heading: "How does FixByte AI diagnose a problem?", body: "Send a photo or describe what happened. The AI asks 1-3 quick questions, then gives the likely cause, how hard the fix is, and step-by-step repair guidance." },
   { heading: "Is the diagnosis always right?", body: "No. It's a best guess from what you share. For anything risky, like a swollen battery, mains power or water damage, stop and see a professional." },
-  { heading: "Why is there a daily limit?", body: `You get ${DAILY_LIMIT} free diagnoses a day. Signed-in accounts share one count across devices, resetting at midnight UTC.` },
+  { heading: "Why is there a daily limit?", body: "You get {0} free diagnoses a day. Signed-in accounts share one count across devices, resetting at midnight UTC." },
   { heading: "How are repair shops found?", body: "From OpenStreetMap, within 8 km of you, or of your Region when location is off. Opening hours and phone numbers come from OpenStreetMap and can be missing or out of date." },
   { heading: "What do repair reminders do?", body: "Two days after a diagnosis, your phone reminds you to check how the repair went. Turn them off anytime with the Repair reminders switch." },
-  { heading: "What does Language change?", body: "The language the AI writes its answers in. The app's own buttons and labels stay in English." },
+  { heading: "What does Language change?", body: "The whole app: its buttons, labels and pages, and the language the AI writes its answers in." },
 ];
 const PRIVACY: Doc = [
   { heading: "What you send", body: "Photos and descriptions you send go through FixByte's server to an AI provider (Google Gemini, Groq, Mistral or OpenRouter) to produce your diagnosis. FixByte's server doesn't keep them; each provider handles them under its own privacy policy." },
   { heading: "Your location", body: "Used only to find nearby repair shops and directions. Shop searches go through FixByte's server to OpenStreetMap services, and directions come from OpenStreetMap's routing service. Your location isn't stored." },
   { heading: "Saved data", body: "Settings stay on this device. When signed in, your full conversations and attached photos, saved diagnoses, gadgets, diagnosis history, avatar color and daily diagnosis count are saved in Firebase and synced across devices. An offline copy stays on this device." },
   { heading: "What we don't do", body: "No ads, no tracking, and your data isn't sold." },
-  { heading: "Contact", body: `Questions about your privacy: ${SUPPORT_EMAIL}` },
+  { heading: "Contact", body: "Questions about your privacy: {1}" },
 ];
 const TERMS: Doc = [
   { heading: "Guidance only", body: "FixByte AI gives repair guidance based on what you share. It can't inspect your device in person and can be wrong." },
   { heading: "Your safety", body: "Follow the warnings in each repair guide. Stop and see a professional for swollen batteries, mains power, water damage, or anything you're unsure about." },
   { heading: "Your responsibility", body: "You decide whether to attempt a repair. FixByte AI isn't responsible for damage, data loss or injury from repairs you carry out." },
-  { heading: "Fair use", body: `The free plan includes ${DAILY_LIMIT} diagnoses a day. Don't misuse the service or try to get around the limit.` },
+  { heading: "Fair use", body: "The free plan includes {0} diagnoses a day. Don't misuse the service or try to get around the limit." },
   { heading: "Changes", body: "These terms may change as the app grows. The latest version is always here." },
 ];
 
@@ -1714,7 +1711,7 @@ function Profile({
 
   function feedback() {
     const url = `mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent(`FixByte AI feedback (v${VERSION})`)}`;
-    Linking.openURL(url).catch(() => setNote(`No email app found. Send feedback to ${SUPPORT_EMAIL}.`));
+    Linking.openURL(url).catch(() => setNote(tr("No email app found. Send feedback to {0}.", SUPPORT_EMAIL)));
   }
 
   if (page === "edit") {
@@ -1759,7 +1756,7 @@ function Profile({
       <SubPage title={page === "language" ? "Language" : "Region"} onBack={back}>
         <Text style={[s.msgText, s.dim, s.pHint]}>
           {page === "language"
-            ? "The language FixByte AI writes its answers in."
+            ? "The language for the whole app, including FixByte AI's answers."
             : "Where repair-shop search looks when location is off."}
         </Text>
         <View style={s.pSettings}>
@@ -1776,7 +1773,7 @@ function Profile({
                 accessibilityRole="radio"
                 accessibilityState={{ checked: on }}
               >
-                <Text style={s.pRowLabel}>{o}</Text>
+                <Text style={s.pRowLabel}>{LANGUAGE_NAMES[o] ?? o}</Text>
                 {on && <Feather name="check" size={18} color={tone("#000")} />}
               </Pressable>
             );
@@ -1792,7 +1789,7 @@ function Profile({
           <Text style={s.pDocHeading}>Password</Text>
           <Text style={s.pDocBody}>
             {user?.email
-              ? `To change your password, we'll email a reset link to ${user.email}.`
+              ? tr("To change your password, we'll email a reset link to {0}.", user.email)
               : "Sign-in isn't connected to Firebase yet, so there's no password to change."}
           </Text>
         </View>
@@ -1800,7 +1797,7 @@ function Profile({
           <Pressable
             onPress={() =>
               sendPasswordResetEmail(firebaseAuth(), user.email!)
-                .then(() => setNote(`Reset link sent to ${user.email}. Check your inbox.`))
+                .then(() => setNote(tr("Reset link sent to {0}. Check your inbox.", user.email!)))
                 .catch((e) => setNote(authMessage(e)))
             }
             style={[s.googleBtn, s.pSignOut]}
@@ -1857,10 +1854,10 @@ function Profile({
             </Pressable>
             {!!delError && <Text style={s.error}>{delError}</Text>}
             <Text style={[s.msgText, s.dim, s.pHint]}>
-              {confirmDelete && isGoogleUser(user)
-                ? "Google will ask you to pick your account once more to confirm it's you. "
-                : ""}
-              Deleting removes your account{user.email ? ` (${user.email})` : ""}, synced gadgets and history, and saved data on this device. It can't be undone.
+              {confirmDelete && isGoogleUser(user) ? `${tr("Google will ask you to pick your account once more to confirm it's you.")} ` : ""}
+              {user.email
+                ? tr("Deleting removes your account ({0}), synced gadgets and history, and saved data on this device. It can't be undone.", user.email)
+                : tr("Deleting removes your account, synced gadgets and history, and saved data on this device. It can't be undone.")}
             </Text>
           </>
         )}
@@ -1875,7 +1872,7 @@ function Profile({
           {doc.map((d) => (
             <View key={d.heading} style={s.pDocItem}>
               <Text style={s.pDocHeading}>{d.heading}</Text>
-              <Text style={s.pDocBody}>{d.body}</Text>
+              <Text style={s.pDocBody}>{tr(d.body, DAILY_LIMIT, SUPPORT_EMAIL)}</Text>
             </View>
           ))}
         </View>
@@ -1888,7 +1885,7 @@ function Profile({
         <View style={[s.pSettings, s.pAbout]}>
           <Logo />
           <Text style={[s.pName, s.pAboutName]}>FixByte AI</Text>
-          <Text style={s.pDocBody}>Version {VERSION}</Text>
+          <Text style={s.pDocBody}>{tr("Version {0}", VERSION)}</Text>
           <Text style={[s.pDocBody, s.pAboutText]}>
             An AI tech-repair assistant. Diagnose a device from a photo or description, follow a repair guide, or find a
             nearby repair shop.
@@ -1907,7 +1904,7 @@ function Profile({
 
   const settingRows: Row[] = [
     { icon: "moon", label: "Appearance", value: THEMES.find((t) => t.value === settings.theme)?.short, onPress: () => setPage("appearance") },
-    { icon: "globe", label: "Language", value: settings.language, onPress: () => setPage("language") },
+    { icon: "globe", label: "Language", value: LANGUAGE_NAMES[settings.language] ?? settings.language, onPress: () => setPage("language") },
     { icon: "map-pin", label: "Region", value: settings.region, onPress: () => setPage("region") },
   ];
   const supportRows: Row[] = [
@@ -2198,8 +2195,8 @@ function Conversations({ items, error, synced, onBack, onOpen, onNew }: {
                 <Feather name="chevron-right" size={18} color={tone("rgba(0,0,0,0.4)")} />
               </View>
               <View style={s.hxFoot}>
-                <Text style={[s.hxMetaText, s.flex]}>{shortDate(conversation.updatedAt)} · {new Date(conversation.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</Text>
-                <Text style={s.hxMetaText}>{conversation.turns.length} messages</Text>
+                <Text style={[s.hxMetaText, s.flex]}>{shortDate(conversation.updatedAt)} · {new Date(conversation.updatedAt).toLocaleTimeString(locale(), { hour: "numeric", minute: "2-digit" })}</Text>
+                <Text style={s.hxMetaText}>{tr("{0} messages", conversation.turns.length)}</Text>
               </View>
             </Pressable>
           );
@@ -2212,8 +2209,9 @@ function Conversations({ items, error, synced, onBack, onOpen, onNew }: {
 // History: a month calendar marking each day's checks for one gadget, and the list of those checks.
 // Checks sync to the account when a diagnosis finishes. "fixed" comes from the repair
 // guide's "Did it work?".
-const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-const WEEKDAYS = ["S", "M", "T", "W", "T", "F", "S"];
+// Month and weekday names in the app's language.
+const monthName = (y: number, m: number) => new Date(y, m, 1).toLocaleDateString(locale(), { month: "long" });
+const weekdays = () => Array.from({ length: 7 }, (_, i) => new Date(2023, 0, 1 + i).toLocaleDateString(locale(), { weekday: "narrow" })); // 1 Jan 2023 was a Sunday
 const ymd = (y: number, m: number, d: number) => `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
 
 function StatusDot({ status, big }: { status: CheckStatus; big?: boolean }) {
@@ -2303,10 +2301,10 @@ function History({
   };
   const dayLabel = (d: string) =>
     d === today
-      ? "Today"
+      ? tr("Today")
       : d === yesterday
-        ? "Yesterday"
-        : parseDay(d).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+        ? tr("Yesterday")
+        : parseDay(d).toLocaleDateString(locale(), { weekday: "short", month: "short", day: "numeric" });
   const toggle = (id: string) => {
     setOpen(open === id ? null : id);
     setConfirm(false);
@@ -2319,7 +2317,7 @@ function History({
           <Text style={s.gTitle}>History</Text>
           <Text style={s.gCount}>
             {history.length
-              ? `${history.length} check${history.length === 1 ? "" : "s"} · ${fixedAll} fixed`
+              ? tr(history.length === 1 ? "1 check · {0} fixed" : "{0} checks · {1} fixed", history.length === 1 ? fixedAll : history.length, fixedAll)
               : "Every check and fix, by date"}
           </Text>
         </View>
@@ -2371,7 +2369,7 @@ function History({
             <View style={s.hCal}>
               <View style={s.hMonthRow}>
                 <Text style={s.hMonth}>
-                  {MONTHS[view.m]} <Text style={s.hxYear}>{view.y}</Text>
+                  {monthName(view.y, view.m)} <Text style={s.hxYear}>{view.y}</Text>
                 </Text>
                 <Pressable onPress={() => move(-1)} style={s.hxNav} hitSlop={6} accessibilityLabel="Previous month">
                   <Feather name="chevron-left" size={18} color={tone("#000")} />
@@ -2382,7 +2380,7 @@ function History({
               </View>
 
               <View style={s.hWeek}>
-                {WEEKDAYS.map((w, i) => (
+                {weekdays().map((w, i) => (
                   <Text key={i} style={[s.hCell, s.hWeekday]}>
                     {w}
                   </Text>
@@ -2403,7 +2401,7 @@ function History({
                           setOpen(null);
                         }}
                         style={s.hCell}
-                        accessibilityLabel={`${MONTHS[view.m]} ${d}${status ? `, ${STATUS_BADGE[status].label}` : ""}`}
+                        accessibilityLabel={`${new Date(view.y, view.m, d).toLocaleDateString(locale(), { month: "long", day: "numeric" })}${status ? `, ${tr(STATUS_BADGE[status].label)}` : ""}`}
                         accessibilityState={{ selected }}
                       >
                         <View style={[s.hDay, isToday && s.hToday, selected && s.hSelected]}>
@@ -2427,7 +2425,7 @@ function History({
                     <StatusDot status={st} />
                     <Text style={s.hxLegendNum}>{count(st)}</Text>
                     <Text style={s.hxLegendText} numberOfLines={1}>
-                      {STATUS_BADGE[st].label.toLowerCase()}
+                      {tr(STATUS_BADGE[st].label).toLowerCase()}
                     </Text>
                   </View>
                 ))}
@@ -2437,7 +2435,7 @@ function History({
             {day !== null && (
               <Pressable onPress={() => setDay(null)} style={s.hxDayChip} accessibilityRole="button" accessibilityLabel="Show the whole month">
                 <Text style={s.hxDayChipText}>
-                  {MONTHS[view.m].slice(0, 3)} {day}
+                  {new Date(view.y, view.m, day).toLocaleDateString(locale(), { month: "short", day: "numeric" })}
                 </Text>
                 <Feather name="x" size={14} color={tone("#fff")} />
               </Pressable>
@@ -2448,7 +2446,7 @@ function History({
                 <View style={s.hxDayHead}>
                   <Text style={s.monoLabel}>{dayLabel(grp.date).toUpperCase()}</Text>
                   <Text style={s.monoLabel}>
-                    {grp.items.length} CHECK{grp.items.length === 1 ? "" : "S"}
+                    {tr(grp.items.length === 1 ? "1 CHECK" : "{0} CHECKS", grp.items.length)}
                   </Text>
                 </View>
                 {grp.items.map((c) => {
@@ -2524,7 +2522,7 @@ function History({
             {!shown.length && (
               <View style={s.hxNone}>
                 <Text style={[s.msgText, s.dim]}>
-                  No checks {day !== null ? "on this day" : `in ${MONTHS[view.m]}`}.
+                  {day !== null ? tr("No checks on this day.") : tr("No checks in {0}.", monthName(view.y, view.m))}
                 </Text>
                 {day === null && checks.length > 0 && (
                   <Pressable onPress={() => goTo(monthOf(checks[0].date))} hitSlop={8} accessibilityRole="button">
@@ -2564,7 +2562,7 @@ const SETUP_STEPS: { title: string; sub: string }[] = [
   { title: "Which gadgets do you use?", sub: "Pick all that apply. It helps FixByte AI recognise your devices." },
   { title: "How handy are you with repairs?", sub: "Your repair guides will match your experience." },
   { title: "Where are you based?", sub: "Used to find repair shops when your location is off." },
-  { title: "Which language should FixByte AI reply in?", sub: "The app's buttons stay in English." },
+  { title: "Which language should FixByte AI use?", sub: "The whole app switches to it, including the AI's answers." },
 ];
 
 function Setup({ settings, onFinish }: { settings: Settings; onFinish: (answers: Partial<SetupAnswers>) => void }) {
@@ -2580,6 +2578,7 @@ function Setup({ settings, onFinish }: { settings: Settings; onFinish: (answers:
   const next = () => (last ? onFinish({ ...a, name: a.name.trim() }) : setStep(step + 1));
   const set = (patch: Partial<SetupAnswers>) => setA((cur) => ({ ...cur, ...patch }));
   const { title, sub } = SETUP_STEPS[step];
+  setLanguage(a.language); // a picked language shows straight away
 
   return (
     <KeyboardAvoidingView style={s.flex} behavior="padding">
@@ -2605,7 +2604,7 @@ function Setup({ settings, onFinish }: { settings: Settings; onFinish: (answers:
       {/* Keyed by step so each question starts scrolled to the top. */}
       <ScrollView key={step} style={s.flex} contentContainerStyle={s.setup} keyboardShouldPersistTaps="handled">
         <Text style={s.monoLabel}>
-          QUESTION {step + 1} OF {SETUP_STEPS.length}
+          {tr("QUESTION {0} OF {1}", step + 1, SETUP_STEPS.length)}
         </Text>
         <Text style={s.setupTitle}>{title}</Text>
         <Text style={s.setupSub}>{sub}</Text>
@@ -2673,7 +2672,7 @@ function Setup({ settings, onFinish }: { settings: Settings; onFinish: (answers:
               const on = a[key] === o;
               return (
                 <Pressable key={o} onPress={() => set({ [key]: o })} style={s.pRow} accessibilityRole="radio" accessibilityState={{ checked: on }}>
-                  <Text style={s.pRowLabel}>{o}</Text>
+                  <Text style={s.pRowLabel}>{step === 4 ? LANGUAGE_NAMES[o] : o}</Text>
                   {on && <Feather name="check" size={20} color={tone("#000")} />}
                 </Pressable>
               );
@@ -2741,7 +2740,7 @@ function Auth({ initial, onBack, onDone }: { initial: AuthMode; onBack: () => vo
     if (!email.trim()) return fail("Type your email above first.");
     try {
       await sendPasswordResetEmail(firebaseAuth(), email.trim());
-      setMessage({ text: `Reset link sent to ${email.trim()}. Check your inbox.`, error: false });
+      setMessage({ text: tr("Reset link sent to {0}. Check your inbox.", email.trim()), error: false });
     } catch (e) {
       fail(e);
     }
@@ -2914,14 +2913,14 @@ type Point = { lat: number; lng: number };
 // "8 PM", "8:30 PM", or "Tue 9 AM" when it isn't today.
 function clock(iso: string) {
   const d = new Date(iso);
-  const t = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }).replace(":00", "");
-  return d.toDateString() === new Date().toDateString() ? t : `${d.toLocaleDateString([], { weekday: "short" })} ${t}`;
+  const t = d.toLocaleTimeString(locale(), { hour: "numeric", minute: "2-digit" }).replace(":00", "");
+  return d.toDateString() === new Date().toDateString() ? t : `${d.toLocaleDateString(locale(), { weekday: "short" })} ${t}`;
 }
 
 function hours(shop: Shop) {
   if (shop.openNow === undefined) return "Hours not listed";
-  if (shop.openNow) return shop.closes ? `Open until ${clock(shop.closes)}` : "Open now";
-  return shop.opens ? `Opens ${clock(shop.opens)}` : "Closed";
+  if (shop.openNow) return shop.closes ? tr("Open until {0}", clock(shop.closes)) : "Open now";
+  return shop.opens ? tr("Opens {0}", clock(shop.opens)) : "Closed";
 }
 
 // In-app directions from OpenStreetMap's free routing service (FOSSGIS): no key, but meant for light use.
@@ -2942,14 +2941,14 @@ const TURNS: Record<string, [string, FeatherName]> = {
 };
 
 function step({ name, distance, maneuver: { type, modifier, exit } }: OsrmStep, shop: string): Step {
-  const onto = name ? ` onto ${name}` : "";
-  if (type === "depart") return { text: `Start${name ? ` on ${name}` : ""}`, m: distance, icon: "navigation" };
-  if (type === "arrive") return { text: `Arrive at ${shop}`, m: 0, icon: "flag" };
+  const onto = (text: string) => (name ? tr("{0} onto {1}", text, name) : text);
+  if (type === "depart") return { text: name ? tr("Start on {0}", name) : tr("Start"), m: distance, icon: "navigation" };
+  if (type === "arrive") return { text: tr("Arrive at {0}", shop), m: 0, icon: "flag" };
   if (type.includes("roundabout") || type === "rotary") {
-    return { text: `At the roundabout, take ${exit ? `exit ${exit}` : "the exit"}${onto}`, m: distance, icon: "rotate-cw" };
+    return { text: onto(exit ? tr("At the roundabout, take exit {0}", exit) : tr("At the roundabout, take the exit")), m: distance, icon: "rotate-cw" };
   }
   const [verb, icon] = (type !== "new name" && TURNS[modifier ?? ""]) || TURNS.straight;
-  return { text: verb + onto, m: distance, icon };
+  return { text: onto(tr(verb)), m: distance, icon };
 }
 
 async function directions(from: Point, shop: Shop, mode: Mode): Promise<Route> {
@@ -3048,7 +3047,7 @@ function TileMap({ you, center, shops, route, onDrag }: { you?: Point; center: P
       // Web-only style (missing from RN's types): touch drags on the map pan it instead of scrolling the page.
       style={[s.map, Platform.OS === "web" && ({ touchAction: "none" } as {})]}
       onLayout={(e) => setW(e.nativeEvent.layout.width)}
-      accessibilityLabel="Map of nearby repair shops"
+      accessibilityLabel={tr("Map of nearby repair shops")}
       {...pan.panHandlers}
     >
       {tiles.map(({ x, y }) => (
@@ -3210,7 +3209,7 @@ function Shops({ t, region, onBack, onGadgets }: { t: Extract<Turn, { role: "ass
             value={nearText}
             onChangeText={setNearText}
             onSubmitEditing={() => setNear(nearText.trim())}
-            placeholder={area.city ? `Near ${area.city}` : "Near you"}
+            placeholder={area.city ? tr("Near {0}", area.city) : "Near you"}
             placeholderTextColor={tone("rgba(0,0,0,0.2)")}
             returnKeyType="search"
             accessibilityLabel="Search near a place"
@@ -3236,7 +3235,7 @@ function Shops({ t, region, onBack, onGadgets }: { t: Extract<Turn, { role: "ass
         </ScrollView>
 
         <Text style={[s.monoLabel, s.shopCount]}>
-          {loading ? "FINDING SHOPS…" : `${shops.length} SHOP${shops.length === 1 ? "" : "S"} NEARBY${where ? ` · ${where.toUpperCase()}` : ""}`}
+          {loading ? "FINDING SHOPS…" : tr(shops.length === 1 ? "1 SHOP NEARBY" : "{0} SHOPS NEARBY", shops.length) + (where ? ` · ${where.toUpperCase()}` : "")}
         </Text>
         {!!error && <Text style={s.error}>{error}</Text>}
         {!loading && !error && shops.length === 0 && (
@@ -3276,7 +3275,7 @@ function Shops({ t, region, onBack, onGadgets }: { t: Extract<Turn, { role: "ass
                   {route?.shopId === shop.id ? (
                     <>
                       <View style={s.shopRow}>
-                        <Text style={s.routeTime}>{route.min} min</Text>
+                        <Text style={s.routeTime}>{tr("{0} min", route.min)}</Text>
                         <Text style={[s.shopDist, s.flex]}>{meters(route.m)}</Text>
                         {(["car", "foot"] as const).map((mode) => (
                           <Pressable
@@ -3314,7 +3313,7 @@ function Shops({ t, region, onBack, onGadgets }: { t: Extract<Turn, { role: "ass
                       onPress={() => shop.phone && Linking.openURL(`tel:${shop.phone.replace(/[^\d+]/g, "")}`)}
                       disabled={!shop.phone}
                       style={[s.circle, s.bigCircle, s.callBtn, !shop.phone && s.disabled]}
-                      accessibilityLabel={shop.phone ? `Call ${shop.name}` : "No phone number listed"}
+                      accessibilityLabel={shop.phone ? tr("Call {0}", shop.name) : "No phone number listed"}
                     >
                       <Feather name="phone" size={20} color={tone("#000")} />
                     </Pressable>
@@ -3336,7 +3335,7 @@ function Usage({ used, error, upgrade }: { used: number | null; error: boolean; 
   const [showUpgradeInfo, setShowUpgradeInfo] = useState(false);
   const left = used === null ? 0 : Math.max(0, DAILY_LIMIT - used);
   const ready = !error && used !== null;
-  const label = error ? "Daily allowance unavailable. Check your connection." : used === null ? "Syncing daily allowance." : `${left} of ${DAILY_LIMIT} free diagnoses left today.${left === 0 ? " Your allowance renews daily." : ""}`;
+  const label = tr(error ? "Daily allowance unavailable. Check your connection." : used === null ? "Syncing daily allowance." : "{0} of {1} free diagnoses left today.", left, DAILY_LIMIT) + (ready && left === 0 ? ` ${tr("Your allowance renews daily.")}` : "");
   return (
     <View style={s.usage}>
       <View style={s.usageHeading}>
@@ -3344,7 +3343,7 @@ function Usage({ used, error, upgrade }: { used: number | null; error: boolean; 
           <Text style={s.usageTitle}>Today's diagnoses</Text>
           {ready ? (
             <Text style={[s.usageCount, left === 0 && s.usageEmpty]}>
-              {left}<Text style={s.usageTotal}> / {DAILY_LIMIT} left</Text>
+              {left}<Text style={s.usageTotal}>{tr(" / {0} left", DAILY_LIMIT)}</Text>
             </Text>
           ) : (
             <Text style={s.usageTotal}>{error ? "Unavailable" : "Syncing…"}</Text>
@@ -3431,7 +3430,7 @@ function FileCheck({
           <Feather name="plus" size={18} color={GREEN} />
         </View>
         <Text style={s.fileRowText} numberOfLines={1}>
-          Add {device ? `“${device}”` : "this device"} as a gadget
+          {device ? tr("Add “{0}” as a gadget", device) : tr("Add this device as a gadget")}
         </Text>
       </Pressable>
       <Pressable onPress={onSkip} style={s.fileSkip} hitSlop={8} accessibilityRole="button">
@@ -3446,7 +3445,7 @@ function AskFixed({ gadget, onAnswer }: { gadget?: string; onAnswer: (fixed: boo
   return (
     <Pop from="left" style={s.fileCard}>
       <Text style={s.fileTitle}>Did the repair work?</Text>
-      <Text style={s.fileSub}>{gadget ? `We'll mark your ${gadget} as fixed.` : "We'll mark this check as fixed."}</Text>
+      <Text style={s.fileSub}>{gadget ? tr("We'll mark your {0} as fixed.", gadget) : "We'll mark this check as fixed."}</Text>
       <View style={s.gAddActions}>
         <Pressable onPress={() => onAnswer(false)} style={[s.googleBtn, s.fileBtn]} accessibilityRole="button">
           <Text style={s.googleText}>Not yet</Text>
@@ -3467,7 +3466,7 @@ function Result({ t, onBack, onGadgets, top }: { t: Extract<Turn, { role: "assis
   const diff = TAGS.difficulty[d.difficulty] ?? TAGS.difficulty["Some skill"];
   const pro = d.difficulty === "Pro repair";
   const secs = t.seconds ?? 1;
-  const meta = [t.device, `Diagnosed in ${secs} second${secs === 1 ? "" : "s"}`].filter(Boolean).join(" · ");
+  const meta = [t.device, tr(secs === 1 ? "Diagnosed in 1 second" : "Diagnosed in {0} seconds", secs)].filter(Boolean).join(" · ");
   const confidence = Math.round(Math.min(100, Math.max(0, d.confidence ?? 0)));
 
   return (
@@ -3513,7 +3512,7 @@ function Result({ t, onBack, onGadgets, top }: { t: Extract<Turn, { role: "assis
               <Text style={s.proTitle}>{d.problem}</Text>
               <Text style={s.proWhy}>{d.why}</Text>
               <View style={s.proChips}>
-                {[cat.label, d.risk, `${confidence}% match`].map((c) => (
+                {[cat.label, d.risk, tr("{0}% match", confidence)].map((c) => (
                   <View key={c} style={s.proChip}>
                     <Text style={s.proChipText}>{c}</Text>
                   </View>
@@ -3565,9 +3564,9 @@ function Result({ t, onBack, onGadgets, top }: { t: Extract<Turn, { role: "assis
 }
 
 function minutesLabel(m: number) {
-  if (!m || m < 60) return `About ${Math.max(1, Math.round(m || 0))} min`;
+  if (!m || m < 60) return tr("About {0} min", Math.max(1, Math.round(m || 0)));
   const h = Math.round((m / 60) * 2) / 2; // nearest half hour
-  return `About ${h} hr${h === 1 ? "" : "s"}`;
+  return h === 1 ? tr("About 1 hr") : tr("About {0} hrs", h);
 }
 
 function Guide({ d, step, onStep, onClose }: { d: Diagnosis; step: number; onStep: (i: number) => void; onClose: (finished: boolean) => void }) {
@@ -3615,7 +3614,7 @@ function Guide({ d, step, onStep, onClose }: { d: Diagnosis; step: number; onSte
         </View>
 
         <View style={s.stepCard}>
-          <Text style={s.monoLabel}>STEP {String(step + 1).padStart(2, "0")}</Text>
+          <Text style={s.monoLabel}>{tr("STEP {0}", String(step + 1).padStart(2, "0"))}</Text>
           <Text style={s.stepTitle}>{st.title}</Text>
         </View>
         <Text style={s.stepDetail}>{st.detail}</Text>
@@ -3735,7 +3734,7 @@ function Diagnosing({ d, onCancel }: { d: Diag; onCancel: () => void }) {
               <StepIcon key={state} state={state} />
               <Text style={[s.stepLabel, state === "next" && s.muted]}>{label}</Text>
               <Text style={[s.stepStatus, state === "active" && s.greenText]}>
-                {state === "done" ? (status || "Done").toUpperCase() : state === "active" ? "WORKING" : "NEXT"}
+                {state === "done" ? tr(status || "Done").toUpperCase() : state === "active" ? "WORKING" : "NEXT"}
               </Text>
             </View>
           );
@@ -3760,6 +3759,7 @@ function Pressable({ style, onPressIn, onPressOut, ...props }: PressableProps) {
   return (
     <AnimatedPressable
       {...props}
+      accessibilityLabel={props.accessibilityLabel && tr(props.accessibilityLabel)}
       onPressIn={(e) => {
         to(0.72);
         onPressIn?.(e);

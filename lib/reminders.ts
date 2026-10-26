@@ -1,6 +1,7 @@
 import { Platform } from "react-native";
 import Constants, { ExecutionEnvironment } from "expo-constants";
 import type * as NotificationsModule from "expo-notifications";
+import { tr } from "./i18n";
 
 // Repair reminders: a local notification two days after a diagnosis, asking how the repair went.
 // Phones only: the web version has no notifications.
@@ -37,7 +38,7 @@ export async function remindLater(device: string | undefined, summary: string) {
   const Notifications = notifications();
   if (!Notifications || !(await allowReminders())) return;
   await Notifications.scheduleNotificationAsync({
-    content: { title: `How's your ${device || "device"}?`, body: `${summary}. Open FixByte AI to pick up the repair guide.` },
+    content: { title: tr("How's your {0}?", device || tr("device")), body: tr("{0}. Open FixByte AI to pick up the repair guide.", summary) },
     trigger: { type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL, seconds: AFTER_SECONDS, channelId: CHANNEL },
   }).catch(() => {});
 }
